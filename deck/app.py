@@ -29,7 +29,7 @@ from .actions import Actions
 from .desktop import Desktop
 from .device import Deck
 from .keys import Do, Go, Key, Snapshot, View
-from .presses import Navigate, Presses, Run
+from .presses import Charge, Navigate, Presses, Run
 from .render import Flashed, render
 from .sources.registry import Sources
 from .widgets import Widgets
@@ -104,7 +104,7 @@ class App:
         screen = self.screen(view)
         with self._cond:
             overlay = self._presses.overlay(view, time.monotonic())
-        tiles = {i: Flashed(key.tile, overlay[i]) if i in overlay else key.tile for i, key in screen.items()}
+        tiles = {i: _flashed(key.tile, overlay[i]) if i in overlay else key.tile for i, key in screen.items()}
         with self._cond:
             if self.view == view:
                 self._screen = screen
@@ -116,7 +116,7 @@ class App:
         snap = self.snapshot()
         lively = self._presses.overlay(self.view, now) or any(check(snap) for check in self._setup.lively_checks)
         wait = 1.0 if lively else 2.0
-        due = self._presses.next_deadline()
+        due = self._presses.next_deadline(now)
         return wait if due is None else max(0.0, min(wait, due - now + 0.01))
 
     def _mark_dirty(self) -> None:
@@ -165,9 +165,16 @@ class App:
         if err is not None:
             log.warning("action on key %d failed: %s", run.index, err)
         with self._cond:
-            self._presses.completed(run.index, run.view, err is None, time.monotonic())
+            self._presses.completed(run.index, run.view, err is None, time.monotonic(),
+                                    quiet=isinstance(run.action, Do) and run.action.quiet)
             self._dirty = True
             self._cond.notify()
+
+
+def _flashed(tile, mark) -> Flashed:
+    if isinstance(mark, Charge):
+        return Flashed(tile, "charge", progress=mark.progress, label=mark.label)
+    return Flashed(tile, mark)
 
 
 def _describe(action) -> str:

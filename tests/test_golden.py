@@ -36,9 +36,10 @@ def new_snapshot(old: dict) -> Snapshot:
     soon = now + 5
     busy, message, error = old.pop("kvm_busy", False), old.pop("kvm_message", ""), old.pop("kvm_message_error", False)
     dictating, draft = old.pop("dictating", False), old.pop("new_draft", False)
+    sending = old.pop("dictation_sending", False)
     camera = old.pop("camera", None)
     return Snapshot(now=now, **old, kvm_ui=KvmUi(busy, message, error, soon if message else 0.0),
-                    t3_ui=T3Ui(soon if dictating else 0.0, soon if draft else 0.0),
+                    t3_ui=T3Ui(soon if dictating else 0.0, soon if draft else 0.0, sending),
                     camera=Still(camera, soon) if camera else None)
 
 
@@ -59,7 +60,7 @@ def action_desc(a):
     if isinstance(a, Go):
         return ["go", view_desc(a.view)]
     assert isinstance(a, Do)
-    return ["do", a.action, repr(a.args), view_desc(a.then) if a.then else None]
+    return ["do", a.action, repr(a.args), view_desc(a.then) if a.then else None, a.quiet]
 
 
 @pytest.mark.parametrize("case", sorted(GOLDEN))
@@ -68,7 +69,7 @@ def test_default_layout_matches_the_hand_written_pages(case, deck_layout):
     vname, sname = case.split("/")
     keys = layout.build(lay, widgets, new_view(*gc.VIEWS[vname]), new_snapshot(gc.snapshot_fields(sname)))
     got = {str(i): {"tile": repr(k.tile), "action": action_desc(k.action), "long": action_desc(k.long),
-                    "hold": k.hold} for i, k in sorted(keys.items())}
+                    "hold": k.hold, "long_s": k.long_s, "long_label": k.long_label} for i, k in sorted(keys.items())}
     want = GOLDEN[case]
     diffs = {slot: (want[slot], got[slot]) for slot in want if want[slot] != got.get(slot)}
     assert not diffs, f"{case}: slots differ: " + json.dumps(diffs, indent=1)[:3000]

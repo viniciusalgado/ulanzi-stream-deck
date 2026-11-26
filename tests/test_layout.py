@@ -189,3 +189,17 @@ def test_locked_keeps_music_and_disables_what_needs_the_desktop():
     assert away[8].action is None and away[13].action == Do("kvm.toggle")
     here, _ = example("here", View("fun"))
     assert here[0].action == Do("launch", ("steam://rungameid/570",))
+
+
+def test_done_or_failed_thread_keys_settle_on_a_3_s_hold_and_open_on_a_tap():
+    from deck.sources.t3 import T3State
+    import golden_cases as gc
+    for state in ("ready", "error"):
+        t = gc.threads(1, state=state)
+        k = example("here", View("ai"), t3=T3State({"pc": True}, (gc.PX,), t, (gc.PC,)))[0][3]
+        assert k.action == Do("t3.open_thread", (t[0],))
+        assert k.long == Do("t3.settle", (t[0],), quiet=True) and k.long_s == 3.0 and k.long_label == "Settle"
+    for state in ("working", "attention"):     # still going, or waiting on you: nothing to settle
+        t = gc.threads(1, state=state)
+        k = example("here", View("ai"), t3=T3State({"pc": True}, (gc.PX,), t, (gc.PC,)))[0][3]
+        assert k.long is None and k.action == Do("t3.open_thread", (t[0],))

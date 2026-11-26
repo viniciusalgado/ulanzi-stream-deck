@@ -5,12 +5,14 @@
     key = "pc"  name = "This PC"  url = "http://127.0.0.1:3773"  cli = [...]  primary = true
 
 Sources: t3 (T3State, polled by the desktop: deck.desktop), t3_ui (dictation / new-draft timers).
-Actions: t3.open_thread(thread), t3.open_app, t3.new_thread(project), t3.dictate
+Actions: t3.open_thread(thread), t3.open_app, t3.new_thread(project), t3.dictate (start; again: stop and send),
+         t3.settle(thread)
 Widgets:
     t3.open_app        bring T3 Code forward (or start it)
     t3.dictate         toggle dictation; says where it will type (open thread / the new draft)
     t3.new_thread      with `project`: a new draft there; without: opens the project picker screen
-    t3.threads         live threads, newest first, paging when they don't fit; `project` limits them to one
+    t3.threads         live threads, newest first, paging when they don't fit; `project` limits them to one;
+                       a done or failed thread settles on a `settle_hold`-second hold (0: never)
 Screen: t3.new_thread (environment + project picker). Badge: t3 (threads needing you, else working).
 """
 from __future__ import annotations
@@ -34,6 +36,7 @@ DICTATE_S = 120       # dictation is assumed to stop by itself after this long
 class T3Ui:
     dictating_until: float = 0.0
     draft_until: float = 0.0
+    sending: bool = False     # dictation stopped; waiting for T3 to transcribe and send it
 
 
 def setup(s) -> None:
@@ -48,9 +51,21 @@ def setup(s) -> None:
         s.sources.put("t3_ui", T3Ui(0.0, time.time() + DRAFT_S))
 
     def dictate() -> None:
-        s.desktop.dictate()
-        now = time.time()
-        s.sources.put("t3_ui", replace(ui(), dictating_until=0.0 if ui().dictating_until > now else now + DICTATE_S))
+        """First tap starts T3's dictation; the next stops it and sends the prompt. The key stays busy until the
+        message has reached the server, and flashes red if it never does."""
+        if ui().dictating_until <= time.time():
+            s.desktop.dictate()
+            s.sources.put("t3_ui", replace(ui(), dictating_until=time.time() + DICTATE_S))
+            return
+        s.sources.put("t3_ui", T3Ui(sending=True))   # the new draft (if any) is being sent now
+        try:
+            s.desktop.dictate(True)
+        finally:
+            s.sources.put("t3_ui", replace(ui(), sending=False))
+            try:
+                s.sources.refresh("t3")              # the sent message shows right away
+            except KeyError:                         # no t3 source (the desktop isn't polling T3)
+                pass
 
     s.actions.add("t3.open_thread", lambda thread: s.desktop.open_thread(thread), requires="input",
                   doc="open a thread in T3 Code")
@@ -58,7 +73,10 @@ def setup(s) -> None:
                   doc="bring T3 Code forward, or start it")
     s.actions.add("t3.new_thread", new_thread, requires="input",
                   doc="open a new draft in a project; the next Dictate types into it")
-    s.actions.add("t3.dictate", dictate, requires="input", doc="toggle T3 Code's dictation in the open thread")
+    s.actions.add("t3.dictate", dictate, requires="input",
+                  doc="start dictating into the open thread; again: stop and send it")
+    s.actions.add("t3.settle", lambda thread: s.desktop.settle_thread(thread), requires="session",
+                  doc="settle a done or failed thread (it leaves the deck)")
 
     w = s.widgets
     project_opt = Option("project", str, "", "a project's title or folder name; empty: any project")
@@ -70,8 +88,10 @@ def setup(s) -> None:
     @w.widget("t3.dictate", needs=("t3_ui",), doc="toggle dictation; shows where it will type")
     def dictate_key(ctx):
         u, now, color = ctx.snap.t3_ui or T3Ui(), ctx.snap.now, ctx.color
-        if u.dictating_until > now:
-            tile = AppTile("lucide:mic", "Dictate", sub="listening… tap to stop", color=RED, accent=RED)
+        if u.sending:
+            tile = AppTile("lucide:mic", "Dictate", sub="sending…", color=BLUE, accent=BLUE)
+        elif u.dictating_until > now:
+            tile = AppTile("lucide:mic", "Dictate", sub="listening… tap to send", color=RED, accent=RED)
         elif u.draft_until > now:
             tile = AppTile("lucide:mic", "Dictate", sub="into new thread", color=color, accent=color)
         else:
@@ -94,7 +114,8 @@ def setup(s) -> None:
     @w.widget("t3.threads", slots="many", needs=("t3",),
               options=(project_opt, Option("empty_header", str, "Threads", "title when there are none"),
                        Option("empty_lines", list, ["No active threads", "settled ones stay hidden"],
-                              "lines when there are none")),
+                              "lines when there are none"),
+                       Option("settle_hold", float, 3.0, "seconds to hold a done / failed thread to settle it; 0: off")),
               doc="live threads, newest first; the last slot pages when they don't fit")
     def threads(ctx):
         state, want = ctx.snap.t3 or T3State(), ctx.options["project"]
@@ -108,7 +129,8 @@ def setup(s) -> None:
         if not items:
             return {ctx.slots[0]: Key(InfoTile(ctx.options["empty_header"], "", tuple(ctx.options["empty_lines"]),
                                                accent=GREEN, icon="lucide:circle-check"))}
-        return paged(items, ctx.slots, ctx.view, lambda t: _thread_key(t, ctx.snap.now),
+        settle = ctx.options["settle_hold"]
+        return paged(items, ctx.slots, ctx.view, lambda t: _thread_key(t, ctx.snap.now, settle),
                      lambda o: View(ctx.view.page, offset=o, back=ctx.view.back))
 
     def picker(ctx):
@@ -164,9 +186,12 @@ def _project(state: T3State, want: str):
                 None)
 
 
-def _thread_key(t, now: float) -> Key:
+def _thread_key(t, now: float, settle_hold: float = 0.0) -> Key:
     status = {"working": f"Working {age(now - t.since)}", "attention": "Needs you", "error": "Failed",
               "ready": f"Ready · {age(now - t.since)}"}[t.state]
-    return Key(ThreadTile(t.title, t.project.title, t.project.icon, t.state, status,
-                          phase=int(now) if t.state == "working" else 0),
-               Do("t3.open_thread", (t,)))
+    tile = ThreadTile(t.title, t.project.title, t.project.icon, t.state, status,
+                      phase=int(now) if t.state == "working" else 0)
+    if settle_hold > 0 and t.state in ("ready", "error"):   # done or failed: holding settles it (it then leaves)
+        return Key(tile, Do("t3.open_thread", (t,)), long=Do("t3.settle", (t,), quiet=True),
+                   long_s=settle_hold, long_label="Settle")
+    return Key(tile, Do("t3.open_thread", (t,)))

@@ -21,6 +21,7 @@ or `requires("session")` (works while locked). Pages disable keys whose action t
 from __future__ import annotations
 
 import logging
+import time
 from typing import Callable
 
 from . import winutil, winsession
@@ -112,8 +113,24 @@ class Desktop:
         self.t3.new_thread(project)
 
     @requires("input")
-    def dictate(self) -> None:
-        self.t3.dictate()
+    def dictate(self, send: bool = False) -> None:
+        """Toggle T3's dictation. send=True (stopping): also press Send, and return only once the server has the
+        new message (raises if it never arrives, so the key flashes red)."""
+        since = time.time() - 1.0          # a little slack for the server's clock
+        if send:
+            self.t3.dictate(send=True)
+        else:
+            self.t3.dictate()
+        if send:
+            self.t3.wait_for_sent(since)
+
+    @requires("session")
+    def settle_thread(self, thread) -> None:
+        """Settle a done or failed thread on its server; it leaves the deck on the refresh right after."""
+        try:
+            self.t3.settle(thread)
+        finally:
+            self._refresh("t3")
 
     @requires("input")
     def play_playlist(self, uri: str) -> None:

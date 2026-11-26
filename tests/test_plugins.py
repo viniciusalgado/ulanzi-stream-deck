@@ -65,8 +65,8 @@ def test_a_failed_desk_switch_shows_its_error_on_the_key_for_a_while():
 class FakeDesktop:   # the T3 part of deck.desktop.Desktop
     envs = [Environment("pc", "This PC", "u", ("t3",), primary=True)]
 
-    def __init__(self):
-        self.calls = []
+    def __init__(self, fail_send=False):
+        self.calls, self.fail_send, self.sending = [], fail_send, lambda: None
 
     def poll(self):
         return T3State(envs=tuple(self.envs))
@@ -74,8 +74,17 @@ class FakeDesktop:   # the T3 part of deck.desktop.Desktop
     def new_thread(self, project):
         self.calls.append(("new", project))
 
-    def dictate(self):
-        self.calls.append("dictate")
+    def dictate(self, send=False):
+        if send:
+            seen = self.sending()          # what the key showed while the send was on its way
+            self.calls.append(("send", seen))
+            if self.fail_send:
+                raise RuntimeError("T3 didn't send the dictation within 60 s")
+        else:
+            self.calls.append("dictate")
+
+    def settle_thread(self, thread):
+        self.calls.append(("settle", thread))
 
     def open_thread(self, t):
         pass
@@ -93,15 +102,35 @@ def test_new_thread_points_dictate_at_the_draft_and_dictate_toggles():
     s.actions.run("t3.new_thread", "project")
     assert dictate().tile.sub == "into new thread"
     s.actions.run("t3.dictate")
-    assert dictate().tile.sub == "listening… tap to stop"
+    assert dictate().tile.sub == "listening… tap to send"
+    fake.sending = lambda: dictate().tile.sub
+    s.actions.run("t3.dictate")                       # stop: send, and the key says so until it's sent
+    assert fake.calls == [("new", "project"), "dictate", ("send", "sending…")]
+    assert dictate().tile.sub == "into open thread"   # the draft went out with it
+
+
+def test_a_dictation_that_never_sends_fails_and_the_key_comes_back():
+    fake = FakeDesktop(fail_send=True)
+    s = setup_for(desktop=fake)
+    t3.setup(s)
     s.actions.run("t3.dictate")
-    assert dictate().tile.sub == "into new thread" and fake.calls == [("new", "project"), "dictate", "dictate"]
+    with pytest.raises(RuntimeError, match="didn't send"):
+        s.actions.run("t3.dictate")
+    assert not s.sources.get("t3_ui").sending and s.sources.get("t3_ui").dictating_until == 0.0
+
+
+def test_settle_goes_through_the_desktop_and_works_while_locked():
+    fake = FakeDesktop()
+    s = setup_for(desktop=fake)
+    t3.setup(s)
+    s.actions.run("t3.settle", "thread")
+    assert fake.calls == [("settle", "thread")] and s.actions.usable("t3.settle", "locked")
 
 
 def test_t3_actions_need_the_unlocked_desktop():
     s = setup_for(desktop=FakeDesktop())
     t3.setup(s)
-    assert all(s.actions.get(n).requires == "input" for n in s.actions.names())
+    assert all(s.actions.get(n).requires == "input" for n in s.actions.names() if n != "t3.settle")
     assert not s.actions.usable("t3.dictate", "locked") and s.actions.usable("t3.dictate", "here")
 
 

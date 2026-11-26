@@ -43,6 +43,7 @@ class Do:
     action: str               # a name in deck.actions, e.g. "media.toggle"
     args: tuple = ()
     then: View | None = None  # navigate here as soon as the key is pressed
+    quiet: bool = False       # no "ok" flash when it worked (the key's content changes instead)
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,8 @@ class Key:
     action: Go | Do | None = None
     hold: float = 0.0          # seconds the key must be held before the action runs
     long: Do | None = None     # optional second action for a long press (then `action` runs on a short tap)
+    long_s: float = 0.0        # how long that long press is (0: deck.presses' default)
+    long_label: str = ""       # set: holding shows a filling ring with this label until `long` fires
 
 
 class Snapshot:

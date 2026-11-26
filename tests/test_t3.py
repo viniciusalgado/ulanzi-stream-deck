@@ -83,10 +83,10 @@ class Desktop:
             self.front = False             # e.g. a toast took the foreground
 
 
-def t3(desk, envs=(ENV, WSL), app_rc=0):
+def t3(desk, envs=(ENV, WSL), app_rc=0, rpc=None, settings="nowhere.json"):
     runner = lambda *a, **k: type("R", (), {"returncode": app_rc, "stderr": "", "stdout": ""})()
     return T3(list(envs), runner=runner, launcher=lambda t: None, focus=desk.focus, in_front=desk.in_front,
-              keys=desk.keys, sleep=lambda s: None)
+              keys=desk.keys, sleep=lambda s: None, rpc=rpc, settings=settings)
 
 
 def project(env):
@@ -129,3 +129,70 @@ def test_poll_state_carries_the_configured_environments_even_offline():
     t = t3(Desktop())
     t._retry_at = {"pc": 9e18, "wsl": 9e18}   # both in their offline backoff: no network
     assert t.poll().envs == (ENV, WSL)
+
+
+def test_stopping_dictation_presses_t3s_send_key_right_after(tmp_path):
+    desk = Desktop()
+    t3(desk).dictate(send=True)
+    assert desk.pressed == ["ctrl+shift+d", "enter"]          # no settings file: T3's default, Enter
+    settings = tmp_path / "client-settings.json"
+    settings.write_text('{"sendShortcut": "mod-enter"}')
+    desk = Desktop()
+    t3(desk, settings=settings).dictate(send=True)
+    assert desk.pressed == ["ctrl+shift+d", "ctrl+enter"]
+
+
+def test_stopping_dictation_sends_nothing_if_t3_lost_focus():
+    desk = Desktop(loses_focus_after_keys=1)
+    with pytest.raises(RuntimeError, match="lost focus"):
+        t3(desk).dictate(send=True)
+    assert desk.pressed == ["ctrl+shift+d"]
+
+
+def test_wait_for_sent_returns_once_a_newer_user_message_shows_up():
+    t = t3(Desktop())
+    seen = iter([100.0, 100.0, 205.0])
+    t.latest_user_message = lambda: next(seen)
+    t.wait_for_sent(since=200.0, timeout=60)
+
+
+def test_wait_for_sent_gives_up():
+    t = t3(Desktop())
+    t.latest_user_message = lambda: 0.0
+    with pytest.raises(RuntimeError, match="didn't send"):
+        t.wait_for_sent(since=200.0, timeout=0)
+
+
+def test_settle_dispatches_thread_settle_for_that_thread_with_the_operate_token(tmp_path, monkeypatch):
+    import deck.sources.t3 as mod
+    from deck.sources.t3 import Thread
+    monkeypatch.setattr(mod, "STATE_DIR", tmp_path)
+    (tmp_path / "t3-operate-token-wsl.txt").write_text("x" * 40)
+    calls = []
+    t = t3(Desktop(), rpc=lambda url, token, tag, payload: calls.append((url, token, tag, payload)) or {})
+    th = Thread("th1", "e2", project("wsl"), "Done thing", "ready", 0.0, 0.0, run_id="run-9")
+    t.settle(th)
+    (url, token, tag, cmd), = calls
+    assert (url, token, tag) == ("http://y", "x" * 40, "orchestration.dispatchCommand")
+    assert cmd["type"] == "thread.settle" and cmd["threadId"] == "th1" and cmd["expectedLatestRunId"] == "run-9"
+    assert cmd["commandId"]
+
+
+def test_settle_reissues_a_rejected_operate_token(tmp_path, monkeypatch):
+    import deck.sources.t3 as mod
+    from deck import wsrpc
+    from deck.sources.t3 import Thread
+    monkeypatch.setattr(mod, "STATE_DIR", tmp_path)
+    (tmp_path / "t3-operate-token-pc.txt").write_text("old" * 10)
+    tokens = []
+
+    def rpc(url, token, tag, payload):
+        tokens.append(token)
+        if token == "old" * 10:
+            raise wsrpc.RpcAuthError("expired")
+
+    t = t3(Desktop(), rpc=rpc)
+    t._run = lambda *a, **k: type("R", (), {"returncode": 0, "stderr": "", "stdout": "new" * 10 + "\n"})()
+    t.settle(Thread("th1", "e", project("pc"), "x", "error", 0.0, 0.0))
+    assert tokens == ["old" * 10, "new" * 10]
+    assert (tmp_path / "t3-operate-token-pc.txt").read_text() == "new" * 10
