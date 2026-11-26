@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .pages import Do, Go, Key, View
+from .keys import Do, Go, Key, View
 
 FLASH_S = 1.2
 LONG_PRESS_S = 1.5

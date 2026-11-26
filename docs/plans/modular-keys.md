@@ -1,6 +1,6 @@
 # Plan: modular keys (named actions, widgets, layout in config, plugins)
 
-Status: in progress on branch `modular-keys`, 2026-11-26. Terms: see [GLOSSARY.md](../../GLOSSARY.md). Decisions:
+Status: built on branch `modular-keys`, 2026-11-26 (steps 0-5). Terms: see [GLOSSARY.md](../../GLOSSARY.md). Decisions:
 [ADR 2](../adr/0002-actions-are-named.md), [ADR 3](../adr/0003-layout-in-config-behaviour-in-widgets.md).
 
 Goal: someone else (or their agent) can clone the repo, copy `deck.example.toml` to `deck.toml`, arrange their own

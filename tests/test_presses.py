@@ -1,4 +1,4 @@
-from deck.pages import Do, Go, Key, View
+from deck.keys import Do, Go, Key, View
 from deck.presses import Navigate, Presses, Run
 from deck.render import AppTile
 
@@ -9,8 +9,11 @@ def key(action=None, **kw):
     return Key(AppTile(None, "x"), action, **kw)
 
 
+_n = iter(range(10**6))
+
+
 def act():
-    return Do(lambda: None)
+    return Do(f"action-{next(_n)}")
 
 
 def test_a_plain_key_runs_on_press_and_shows_busy_then_ok_then_nothing():
@@ -64,7 +67,7 @@ def test_go_navigates_and_clears_every_flash():
 
 
 def test_then_navigates_at_once_and_the_flash_stays_on_the_view_it_was_pressed_on():
-    p, a = Presses(), Do(lambda: None, then=FUN)
+    p, a = Presses(), Do("x", then=FUN)
     assert p.press(2, key(a), AI, 0) == [Navigate(FUN), Run(2, AI, a)]
     assert p.overlay(FUN, 0) == {} and p.overlay(AI, 0) == {2: "busy"}
 

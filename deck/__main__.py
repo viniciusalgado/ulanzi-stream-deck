@@ -6,6 +6,8 @@
     .venv\\Scripts\\python -m deck restart          after editing deck.toml or the code
     .venv\\Scripts\\python -m deck reset            the deck froze: restart it over USB (no replug, no admin)
     .venv\\Scripts\\python -m deck headphones [reclaim|reset]   headphone state, or bring them back to this PC
+    .venv\\Scripts\\python -m deck check            check deck.toml: lists every problem in the layout
+    .venv\\Scripts\\python -m deck widgets          every widget, action and badge deck.toml can use
     .venv\\Scripts\\python -m deck preview [dir]    render every page to PNG with live data, without the deck
     .venv\\Scripts\\python -m deck status           what each source reports right now
     .venv\\Scripts\\python -m deck switch pc|laptop move monitors + USB switch from the command line
@@ -243,10 +245,11 @@ def _live_app():
 
     app = App(load_config(), deck_factory=_NoDeck)
     app.sources.poll_all()
-    try:
-        app.camera_snapshot()
-    except RuntimeError:
-        pass
+    if "printer.camera" in app.actions:
+        try:
+            app.actions.run("printer.camera")
+        except Exception:
+            pass
     return app
 
 
@@ -254,38 +257,61 @@ def preview(out: Path) -> None:
     """One PNG per page, laid out like the physical deck."""
     from PIL import Image
 
-    from .pages import View
+    from .keys import View
     from .render import render
     import io
 
     app = _live_app()
     out.mkdir(parents=True, exist_ok=True)
     gap, key, pad = 18, 196, 24
-    for view in (View("fun"), View("ai"), View("new_thread"), View("print")):
+    views = [View(p.name) for p in app.layout.pages]
+    views += [View(name, back=app.layout.start_page) for name in app.widgets.screens]
+    for view in views:
         screen = app.screen(view)
         canvas = Image.new("RGB", (pad * 2 + 5 * key + 4 * gap, pad * 2 + 3 * key + 2 * gap), "#050506")
         for i, k in screen.items():
             img = Image.open(io.BytesIO(render(k.tile)))
             col, row = (3, 2) if i == 13 else (i % 5, i // 5)
             canvas.paste(img, (pad + col * (key + gap), pad + row * (key + gap)))
-        path = out / f"page-{view.page}.png"
+        path = out / f"page-{view.page.replace('.', '-')}.png"
         canvas.save(path)
         print(path)
 
 
 def status() -> None:
     snap = _live_app().snapshot()
-    t3 = snap.t3
-    print("T3 online:", t3.online)
-    for t in t3.threads:
-        print(f"  {t.state:<9} {t.project.title[:18]:<18} {t.title}")
-    m = snap.media
-    print("Media:", "playing" if m.playing else "paused" if m.available else "none", m.title, "-", m.artist)
-    print("Playlists:", [p.title for p in snap.playlists])
-    p = snap.printer
-    print(f"Printer: {p.state} {p.progress:.0%} {p.filename} nozzle {p.nozzle} bed {p.bed}")
-    print("Desk:", snap.kvm)
-    print("Headphones:", snap.headphones)
+    if snap.t3 is not None:
+        print("T3 online:", snap.t3.online)
+        for t in snap.t3.threads:
+            print(f"  {t.state:<9} {t.project.title[:18]:<18} {t.title}")
+    if snap.media is not None:
+        m = snap.media
+        print("Media:", "playing" if m.playing else "paused" if m.available else "none", m.title, "-", m.artist)
+        print("Playlists:", [p.title for p in snap.playlists or ()])
+    if snap.printer is not None:
+        p = snap.printer
+        print(f"Printer: {p.state} {p.progress:.0%} {p.filename} nozzle {p.nozzle} bed {p.bed}")
+    if snap.kvm is not None:
+        print("Desk:", snap.kvm)
+    if snap.headphones is not None:
+        print("Headphones:", snap.headphones)
+
+
+def check() -> None:
+    from .catalog import check as run_check
+    from .config import load_config
+    ok, text = run_check(load_config())
+    print(text)
+    if not ok:
+        sys.exit(1)
+
+
+def widgets() -> None:
+    from .catalog import describe, registries
+    from .config import load_config
+    from .paths import CONFIG_FILE, EXAMPLE_CONFIG
+    actions, ws, _ = registries(load_config(CONFIG_FILE if CONFIG_FILE.is_file() else EXAMPLE_CONFIG))
+    print(describe(actions, ws), end="")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -313,6 +339,10 @@ def main(argv: list[str] | None = None) -> None:
         preview(Path(argv[1]) if len(argv) > 1 else STATE_DIR / "preview")
     elif cmd == "status":
         status()
+    elif cmd == "check":
+        check()
+    elif cmd == "widgets":
+        widgets()
     elif cmd == "switch" and len(argv) == 2:
         from .config import load_config
         from .sources.kvm import Kvm

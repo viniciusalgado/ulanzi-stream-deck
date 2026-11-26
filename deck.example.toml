@@ -1,22 +1,166 @@
-# Ulanzi D200 deck settings. Copy this file to deck.toml (which git ignores) and make it yours.
-# Page layouts are code (deck/pages.py); everything machine- or taste-specific is here.
-# After editing: restart the daemon (python -m deck restart).
+# Ulanzi D200 deck: the default layout and settings. Copy this file to deck.toml (git ignores it) and make it yours.
+#
+#   python -m deck widgets     every widget, action and badge you can use, with their options
+#   python -m deck check       checks deck.toml and lists every problem
+#   python -m deck preview     renders each page to PNG, with live data, without the deck
+#   python -m deck restart     the running daemon picks up the changes
+#
+# Slots (the D200, 5 x 3; 13 is the wide key):
+#
+#      0   1   2   3   4
+#      5   6   7   8   9
+#     10  11  12  [ 13 ]
+#
+# A plugin is on when its section is here: [t3], [media], [headphones], [printer], [kvm]. Delete a section (and the
+# keys that use its widgets) to turn it off.
 
 [deck]
 brightness = 85            # 0-100. The screen never sleeps while the daemon runs.
-start_page = "ai"          # fun | ai | print
+start_page = "ai"          # a page name below
 stop_ulanzi_app = true     # the official Ulanzi app also drives the screen; only one program can
+plugins = []               # extra plugin modules (Python import paths), see deck/plugins/__init__.py
 
-# ---------------- Fun ----------------
-[pages.fun]
-# Keys 0, 1, 6. "open" is a URI, a program path, or a Start-menu app id (shell:AppsFolder\...).
-apps = [
-  { name = "Dota 2",  icon = "brand:dota2",   color = "#e2402b", open = "steam://rungameid/570" },
-  { name = "Discord", icon = "brand:discord", color = "#5865F2", open = 'shell:AppsFolder\com.squirrel.Discord.Discord' },
-  { name = "YouTube", icon = "brand:youtube", color = "#ff0033", open = 'shell:AppsFolder\Chrome._crx_agimnaknmldooml.UserData.Profile1' },
-]
-headphones_label = "XM5"   # key 5
-# Keys 2-4. Right-click a playlist in Spotify > Share > Copy link, and paste the id here.
+# ================= pages =================
+
+[[pages]]
+name = "fun"
+label = "Fun"
+icon = "lucide:gamepad-2"
+color = "#f472b6"
+badge = "media"            # ▶ on the nav key while music plays
+
+  # "open" is a URI, a program path, or a Start-menu app id (shell:AppsFolder\...).
+  [[pages.keys]]
+  slot = 0
+  widget = "launch"
+  label = "Dota 2"
+  icon = "brand:dota2"
+  color = "#e2402b"
+  open = "steam://rungameid/570"
+
+  [[pages.keys]]
+  slot = 1
+  widget = "launch"
+  label = "Discord"
+  icon = "brand:discord"
+  color = "#5865F2"
+  open = 'shell:AppsFolder\com.squirrel.Discord.Discord'
+
+  [[pages.keys]]
+  slots = [2, 3, 4]
+  widget = "media.playlists"   # the [media] playlists, in order
+
+  # Tap: bring the headphones' music link back to this PC. Hold 1.5 s: drop and reconnect it.
+  [[pages.keys]]
+  slot = 5
+  widget = "headphones"
+  label = "XM5"
+
+  [[pages.keys]]
+  slot = 6
+  widget = "launch"
+  label = "YouTube"
+  icon = "brand:youtube"
+  color = "#ff0033"
+  open = 'shell:AppsFolder\Chrome._crx_agimnaknmldooml.UserData.Profile1'
+
+  [[pages.keys]]
+  slot = 7
+  widget = "media.prev"
+
+  [[pages.keys]]
+  slot = 8
+  widget = "media.now_playing"
+
+  [[pages.keys]]
+  slot = 9
+  widget = "media.next"
+
+[[pages]]
+name = "ai"
+label = "AI"
+icon = "lucide:bot"
+color = "#a78bfa"
+badge = "t3"               # threads that need you (amber) or are working (blue)
+
+  [[pages.keys]]
+  slot = 0
+  widget = "t3.open_app"
+
+  [[pages.keys]]
+  slot = 1
+  widget = "t3.dictate"
+
+  [[pages.keys]]
+  slot = 2
+  widget = "t3.new_thread"     # no project: opens the environment / project picker
+
+  [[pages.keys]]
+  slots = [3, 4, 5, 6, 7, 8, 9]
+  widget = "t3.threads"
+
+[[pages]]
+name = "print"
+label = "3D Print"
+icon = "lucide:printer"
+color = "#fb923c"
+badge = "printer"
+
+  [[pages.keys]]
+  slot = 0
+  widget = "t3.new_thread"
+  project = "3d-modelling"     # T3 Code project (title or folder name)
+
+  [[pages.keys]]
+  slots = [1, 2, 3]
+  widget = "t3.threads"
+  project = "3d-modelling"
+  empty_header = "3D threads"
+  empty_lines = ["none active"]
+
+  [[pages.keys]]
+  slot = 4
+  widget = "printer.camera"    # tap: one still on the key; hold: the live stream
+  stream = "http://printer.local/webcam/?action=stream"
+
+  [[pages.keys]]
+  slot = 5
+  widget = "printer.status"
+  open = "http://printer.local/"   # Mainsail
+
+  [[pages.keys]]
+  slot = 6
+  widget = "printer.filament"
+
+  [[pages.keys]]
+  slot = 7
+  widget = "printer.pause_resume"
+
+  [[pages.keys]]
+  slot = 8
+  widget = "printer.cancel"
+  hold = 2.0
+
+  [[pages.keys]]
+  slot = 9
+  widget = "launch"
+  label = "Cura"
+  icon = "app:cura"
+  open = 'C:\Program Files\UltiMaker Cura 5.12.0\UltiMaker-Cura.exe'
+
+# On every page.
+[[bottom]]
+slots = [10, 11, 12]
+widget = "nav"
+
+[[bottom]]
+slot = 13
+widget = "kvm.switch"
+
+# ================= plugins =================
+
+[media]
+# Right-click a playlist in Spotify > Share > Copy link, and paste the id here.
 playlists = [
   "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
   "spotify:playlist:37i9dQZF1DX0FOF1IUWK1W",
@@ -24,14 +168,9 @@ playlists = [
 ]
 spotify_app = 'shell:AppsFolder\SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify'
 
-# Bluetooth headphones on key 5 (Fun). Tap: bring their music link back to this PC (reconnects if it dropped,
-# then pauses/resumes so the multipoint headset picks this PC). Hold 1.5 s: drop and reconnect the link.
-# The default output device is never changed.
+# Bluetooth headphones. The default output device is never changed.
 [headphones]
 name = "WH-1000XM5"        # as shown in Windows' Bluetooth settings
-
-# ---------------- AI (T3 Code) ----------------
-[pages.ai]
 
 # Each environment is a T3 Code server. "cli" runs that environment's t3 command (used once to get a read-only
 # token, and by the primary one to open new thread drafts). Unreachable ones are simply skipped.
@@ -48,18 +187,11 @@ name = "WSL Ubuntu"
 url = "http://127.0.0.1:3774"
 cli = ["wsl.exe", "-d", "Ubuntu", "--exec", "bash", "-c", 'exec "$(ls -d ~/.t3/wsl-runtime/sha256-*/t3 | tail -1)" "$@"', "t3"]
 
-# ---------------- 3D printing ----------------
-[pages.print]
-project = "3d-modelling"   # T3 Code project (title or folder name) whose threads show here
-mainsail = "http://printer.local/"
-camera_page = "http://printer.local/webcam/?action=stream"
-cura = 'C:\Program Files\UltiMaker Cura 5.12.0\UltiMaker-Cura.exe'
-
 [printer]
 api = "http://printer.local:7125"                      # Moonraker
 webcam = "http://printer.local/webcam/?action=snapshot"
 
-# ---------------- Desk switch (wide key) ----------------
+# The desk switch (wide key): both monitors over DDC/CI + an ESP32 that presses the UGREEN USB switch's button.
 [kvm]
 esp_config = '%APPDATA%\ugreen-switch\config.json'     # written by scripts/ugreen_provision.py
 presence = ["04D9:A231", "04D9:A09F"]                   # keyboard + mouse behind the UGREEN switch

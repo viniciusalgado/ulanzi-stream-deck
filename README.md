@@ -22,7 +22,7 @@ Settled, archived, snoozed and subagent threads never appear. The AI page key sh
 ## Setup (once)
 
 ```powershell
-copy deck.example.toml deck.toml        # then edit it: your apps, playlists, printer, monitors
+copy deck.example.toml deck.toml        # then edit it: your pages and keys, apps, playlists, printer, monitors
 C:\Python314\python.exe -m venv .venv
 .venv\Scripts\python -m pip install hidapi pillow resvg-py winrt-runtime winrt-Windows.Media.Control winrt-Windows.Storage.Streams winrt-Windows.Foundation pytest
 .venv\Scripts\python -m deck install      # task "UlanziDeckDaemon": starts at logon, restarts within 5 min if it exits
@@ -32,7 +32,9 @@ C:\Python314\python.exe -m venv .venv
 
 | | |
 |---|---|
-| change apps, playlists, printer, monitors | edit `deck.toml`, then `.venv\Scripts\python -m deck restart` |
+| change keys, pages, apps, playlists, printer, monitors | edit `deck.toml`, `.venv\Scripts\python -m deck check`, then `.venv\Scripts\python -m deck restart` |
+| what keys can I use? | `.venv\Scripts\python -m deck widgets` (every widget, its options, every action) |
+| deck.toml from before layouts (has `[pages.fun]`) | `.venv\Scripts\python scripts\migrate_config.py` |
 | see all pages without the deck | `.venv\Scripts\python -m deck preview` (PNGs in `%APPDATA%\ulanzi-deck\preview`) |
 | what the sources report | `.venv\Scripts\python -m deck status` |
 | switch the desk from a terminal | `.venv\Scripts\python -m deck switch laptop` / `pc` |
@@ -44,14 +46,19 @@ C:\Python314\python.exe -m venv .venv
 | back to the Ulanzi app | `.venv\Scripts\python -m deck uninstall` |
 | tests | `.venv\Scripts\python -m pytest -q` |
 
+Agents (and people) changing the layout or adding widgets: see [AGENTS.md](AGENTS.md).
+
 ## Code map
 
 | module | job |
 |---|---|
 | `deck/device.py` | the D200 USB protocol: `Deck.show(images)` sends only what changed, keeps the screen on, reconnects |
 | `deck/render.py` | tile values (`AppTile`, `ThreadTile`, …) → 196×196 PNG; the visual language lives here |
-| `deck/pages.py` | pure layout: `build(view, snapshot)` → what each key shows and does |
-| `deck/app.py` | the daemon loop: wires sources, presses and the deck together; runs actions on workers |
+| `deck/keys.py` | what a key is: `Key(tile, Do("action.name"))`, `View`, `Snapshot` |
+| `deck/layout.py` | `deck.toml` pages → which widget on which slot; `build(view, snapshot)` → keys (pure) |
+| `deck/widgets.py` / `deck/actions.py` | the registries plugins fill: widget kinds, and named actions |
+| `deck/plugins/` | one module per integration (core, t3, media, headphones, printer, kvm): sources, actions, widgets |
+| `deck/app.py` | the daemon loop: loads plugins and the layout, runs presses and actions, keeps the deck drawn |
 | `deck/presses.py` | pure, clock-driven: what a press means (tap, hold-to-confirm, long press) and each key's flash |
 | `deck/sources/registry.py` | every source's poll thread and latest state (names = `Snapshot` fields), `refresh` after an action |
 | `deck/pnp.py` | Windows Plug and Play: is the deck stuck in boot mode, restart it over USB |
@@ -60,7 +67,7 @@ C:\Python314\python.exe -m venv .venv
 | `deck/sources/printer.py` | Moonraker status, webcam, pause/resume/cancel |
 | `deck/sources/media.py` | Windows media session (now playing, transport) and playlist covers |
 | `deck/sources/headphones.py` | Bluetooth headphones: connected?, battery, Windows' own reconnect call |
-| `deck.toml` | every machine- or taste-specific value |
+| `deck.toml` | your layout and every machine- or taste-specific value (git-ignored; start from `deck.example.toml`) |
 
 Per-machine state (T3 read-only tokens, Spotify token, caches, logs) lives in `%APPDATA%\ulanzi-deck`.
 Icons are vendored in `deck/assets/icons` (sources and licences in `SOURCES.md`; refresh with `python -m deck.fetch_icons`).
