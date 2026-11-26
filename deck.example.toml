@@ -59,6 +59,14 @@ cura = 'C:\Program Files\UltiMaker Cura 5.12.0\UltiMaker-Cura.exe'
 api = "http://printer.local:7125"                      # Moonraker
 webcam = "http://printer.local/webcam/?action=snapshot"
 
+# Optional LAN relay. Install TinyTuya first and use the switch's verified LAN settings.
+# [printer.power]
+# address = "192.168.1.50"
+# device_id = "your-device-id"
+# local_key = "your-local-key"
+# version = 3.3             # Tuya LAN protocol version
+# dps = 1                   # relay datapoint
+
 # ---------------- Desk switch (wide key) ----------------
 [kvm]
 esp_config = '%APPDATA%\ugreen-switch\config.json'     # written by scripts/ugreen_provision.py

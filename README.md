@@ -39,10 +39,26 @@ C:\Python314\python.exe -m venv .venv
 | logs | `%APPDATA%\ulanzi-deck\deck.log` |
 | the deck froze | `.venv\Scripts\python -m deck reset` (restarts it over USB, no admin); if that doesn't help, replug it |
 | headphones back to this PC | Fun key 5: tap = reconnect / re-take playback, hold 1.5 s = drop and reconnect; or `python -m deck headphones reclaim` |
-| preheat for a filament change | 3D Print key 6 while idle heats the hotend to 200 °C and beeps on the printer when ready |
+| preheat for a filament change | 3D Print key 7 with a configured switch, or key 6 without one. Heats the idle hotend to 200 °C and beeps when ready |
+| switch printer power | With a configured switch, tap 3D Print key 8 to power on without heating. When idle and powered on, hold for 2 s to turn off the heaters, cool to 50 °C, and cut power |
 | playlist keys start playback (Premium) | see `deck/sources/spotify.py`, then `python -m deck spotify-login <client id>` |
 | back to the Ulanzi app | `.venv\Scripts\python -m deck uninstall` |
 | tests | `.venv\Scripts\python -m pytest -q` |
+
+## Local printer power switch
+
+For a Tuya Wi-Fi relay, install the optional dependency with `.venv\Scripts\python -m pip install tinytuya`.
+Connect the printer's power supply to the relay and keep the Moonraker host independently powered.
+Copy the commented `[printer.power]` example to your private `deck.toml` and fill in the switch's LAN IP, device ID,
+local key, protocol version, and relay datapoint. Restart the daemon and run `python -m deck status` in the virtual
+environment to check that it can read the relay. Keep the same IP with a DHCP reservation.
+
+The deck talks directly to the switch over the LAN. When the relay is off, **On + Preheat** powers it up and waits
+for Klipper to be idle and ready. During a print or pause, the same two buttons control the job. **Power Off**
+requires a fresh idle reading from Klipper and stops if a job starts while the hotend is cooling.
+
+To verify LAN-only operation with stock firmware, block internet access for the relay at the router while preserving
+local access, then check that the relay still responds after a reboot.
 
 ## Code map
 

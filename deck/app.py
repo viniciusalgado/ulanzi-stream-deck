@@ -27,6 +27,7 @@ from .sources.printer import Printer
 from .sources.registry import Sources
 from .sources.spotify import SpotifyApi
 from .sources.t3 import T3, T3State, environments_from_config
+from .sources.tuya import PowerState, TuyaSwitch
 
 log = logging.getLogger(__name__)
 CAMERA_SHOW_S = 60    # a camera snapshot stays on its key this long, then the icon is back
@@ -39,7 +40,8 @@ class App:
         self.t3 = T3(environments_from_config(cfg["t3"]["environments"]))
         self.media = Media(cfg["pages"]["fun"].get("playlists", []), SpotifyApi.load())
         pr = cfg["printer"]
-        self.printer = Printer(pr["api"], pr.get("webcam"))
+        power = TuyaSwitch(**pr["power"]) if "power" in pr else None
+        self.printer = Printer(pr["api"], pr.get("webcam"), power=power)
         self.kvm = Kvm.from_config(cfg["kvm"])
         self.headphones = Headphones(cfg.get("headphones", {}).get("name", "WH-1000XM5"))
         self.view = View(cfg["deck"].get("start_page", "ai"))
@@ -47,6 +49,9 @@ class App:
         self.sources.add("t3", self.t3.poll, every=2.0, initial=T3State(envs=tuple(self.t3.envs)))
         self.sources.add("media", self.media.poll, every=1.0, initial=MediaState())
         self.sources.add("printer", self.printer.poll, every=lambda: 2.0 if self.view.page == "print" else 6.0)
+        if power is not None:
+            self.sources.add("printer_power", power.poll, every=lambda: 2.0 if self.view.page == "print" else 10.0,
+                             initial=PowerState.UNKNOWN)
         self.sources.add("headphones", self.headphones.poll, every=3.0, initial=HeadphoneState())
         self.sources.add("kvm", self.kvm.poll, every=3.0)
         self.sources.add("playlists", self._playlists, every=600.0, initial=())

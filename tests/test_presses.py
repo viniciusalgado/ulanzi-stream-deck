@@ -102,6 +102,22 @@ def test_letting_go_of_a_charging_key_early_is_a_tap():
     assert p.tick(10) == []
 
 
+def test_a_charging_hold_animates_but_has_no_tap_action():
+    p, power_off = Presses(), act()
+    view = View("print")
+    k = key(power_off, hold=2.0, long_label="Power Off")
+
+    assert p.press(8, k, view, now=0) == []
+    assert p.next_deadline(0.1) == 0.3
+    assert p.overlay(view, 1.0) == {8: Charge(0.5, "Power Off")}
+    assert p.release(8, 1.0) == []
+    assert p.overlay(view, 1.0) == {} and p.tick(2.0) == []
+
+    assert p.press(8, k, view, now=3.0) == []
+    assert p.tick(4.99) == []
+    assert p.tick(5.0) == [Run(8, view, power_off)]
+
+
 def test_a_quiet_action_shows_no_ok_but_still_shows_fail():
     p, a = Presses(), act()
     p.press(4, key(a), AI, 0)

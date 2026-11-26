@@ -13,10 +13,11 @@ time they happened and carries out the effects it returns.
 
 Rules:
   - a plain key acts on press;
-  - a `hold` key acts only after being held that long (it shows "hold" meanwhile); letting go early cancels it;
+  - a `hold` key acts only after being held that long; letting go early cancels it;
   - a key with `long` runs `action` on a short tap (on release) and `long` when held for its long_s (or
-    long_press_s); with a `long_label` it shows a Charge filling up while held, from CHARGE_SHOW_S on, in
-    CHARGE_STEPS steps (each step is a redraw, and the deck's firmware dislikes fast updates);
+    long_press_s);
+  - a held key with a `long_label` shows a Charge filling up from CHARGE_SHOW_S on, in CHARGE_STEPS steps.
+    A hold key without a label shows "hold" immediately;
   - a Do with `quiet` shows no "ok" flash when it worked (e.g. settling: the thread leaves the key anyway);
   - a Go navigates and clears every flash; a Do shows "busy" on its key until completed(), and its `then`
     navigates right away. Flashes belong to the view they were made on and only show there.
@@ -78,7 +79,7 @@ class Presses:
         if key is None or (key.action is None and key.long is None):
             return []
         if key.hold > 0 or key.long is not None:
-            if key.hold > 0:
+            if key.hold > 0 and not key.long_label:
                 self._flash[index] = _Flash("hold", 0.0, view)
             self._holds[index] = _Hold(key, view, now + (key.hold or key.long_s or self._long_press_s), now)
             return []
@@ -127,15 +128,16 @@ class Presses:
         times += [f.until for f in self._flash.values() if f.kind in ("ok", "fail")]
         if now is not None:
             for h in self._holds.values():
-                if h.key.long_label and h.key.long is not None:
+                if h.key.long_label:
                     span = (h.at - h.start) / CHARGE_STEPS
-                    steps = [h.start + CHARGE_SHOW_S] + [h.start + k * span for k in range(1, CHARGE_STEPS)]
-                    times += [t for t in sorted(steps) if t > now][:1]
+                    show_at = h.start + CHARGE_SHOW_S
+                    steps = [show_at] + [h.start + k * span for k in range(1, CHARGE_STEPS)]
+                    times.extend(t for t in steps if t > now and t >= show_at)
         return min(times, default=None)
 
     @staticmethod
     def _charging(h: _Hold, now: float) -> bool:
-        return bool(h.key.long_label) and h.key.long is not None and now - h.start >= CHARGE_SHOW_S
+        return bool(h.key.long_label) and now >= h.start + CHARGE_SHOW_S
 
     def _fire(self, index: int, action, view: View) -> list:
         if action is None:

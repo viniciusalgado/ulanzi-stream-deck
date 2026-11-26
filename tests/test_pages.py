@@ -8,6 +8,7 @@ from deck.sources.kvm import KvmState
 from deck.sources.media import MediaState, Playlist
 from deck.sources.printer import PrinterState
 from deck.sources.t3 import Environment, Project, T3State, Thread
+from deck.sources.tuya import PowerState
 
 PC = Environment("pc", "This PC", "u", ("t3",), primary=True)
 WSL = Environment("wsl", "WSL", "u2", ("t3",))
@@ -23,7 +24,8 @@ def svc():
     """Exactly what pages may call on the App; test_pages_bind_only_what_the_real_app_has keeps it honest."""
     return NS(t3=NS(open_thread=lambda t: None, open_app=lambda: None),
               media=NS(prev=lambda: None, next=lambda: None, toggle=lambda: None, play_playlist=lambda u: None),
-              printer=NS(pause=lambda: None, resume=lambda: None, cancel=lambda: None, filament_change=lambda: None),
+              printer=NS(pause=lambda: None, resume=lambda: None, cancel=lambda: None, filament_change=lambda: None,
+                         power_on=lambda: None, power_off=lambda: None),
               launch=lambda t: None, toggle_kvm=lambda: None,
               camera_snapshot=lambda: None, toggle_dictation=lambda: None, settle_thread=lambda t: None,
               new_thread=lambda p: None, reclaim_headphones=lambda: None, reset_headphones=lambda: None)
@@ -154,6 +156,32 @@ def rich_snapshots():
                     PrinterState(online=True, state="paused"), PrinterState(online=True, state="complete")):
         yield snap(t3=t3, playlists=pls, media=playing, printer=printer, camera=b"jpeg",
                    headphones=HeadphoneState(True, False, 40))
+    yield snap(printer=PrinterState(online=True, state="standby"), printer_power=PowerState.ON)
+    yield snap(printer_power=PowerState.OFF)
+
+
+def test_print_power_keys_follow_the_relay_and_job_state():
+    s = svc()
+    idle = PrinterState(online=True, state="standby")
+    offline = PrinterState()
+    for state, power, key7, key8 in (
+        (offline, PowerState.OFF, "filament_change", "power_on"),
+        (PrinterState(online=True, state="shutdown"), PowerState.OFF, "filament_change", "power_on"),
+        (offline, PowerState.ON, None, None),
+        (idle, PowerState.UNKNOWN, None, None),
+        (idle, PowerState.ON, "filament_change", "power_off"),
+        (PrinterState(online=True, state="printing"), PowerState.ON, "pause", "cancel"),
+        (PrinterState(online=True, state="paused"), PowerState.ON, "resume", "cancel"),
+    ):
+        keys = pages.build(View("print"), snap(printer=state, printer_power=power), s, CFG)
+        assert isinstance(keys[6].tile, Blank)
+        assert keys[7].action == (Do(getattr(s.printer, key7)) if key7 else None)
+        assert keys[8].action == (Do(getattr(s.printer, key8)) if key8 else None)
+        if key8 == "power_on":
+            assert keys[8].tile.label == "Power On" and keys[8].hold == 0.0
+        elif key8:
+            assert keys[8].hold == 2.0
+            assert keys[8].long_label == ("Power Off" if key8 == "power_off" else "")
 
 
 def test_pages_bind_only_what_the_real_app_has():

@@ -15,7 +15,8 @@ Bottom row on every page: 10-12 switch pages (Fun / AI / 3D Print), 13 moves the
             failed: settle)
   New:      0 Back     1 Environment                    2-9 projects of that environment, most recently used first
   3D Print: 0 New thread (3d project)  1-3 its threads  4 camera (tap: snapshot, hold: stream)
-            5 print status  6 filament change  7 pause/resume  8 cancel (hold)  9 Cura
+            5 print status  6 filament change (without switch)  7 pause/resume or preheat
+            8 cancel or power  9 Cura
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from typing import Callable
 from .render import (AMBER, BLUE, FG, GREEN, MUTED, RED, AppTile, ArtTile, Blank, InfoTile, SwitchTile,
                      ThreadTile)
 from .sources.printer import FILAMENT_CHANGE_TEMP
+from .sources.tuya import PowerState
 
 PAGE_COLORS = {"fun": "#f472b6", "ai": "#a78bfa", "print": "#fb923c"}
 NAV = [("fun", "lucide:gamepad-2", "Fun"), ("ai", "lucide:bot", "AI"), ("print", "lucide:printer", "3D Print")]
@@ -59,7 +61,7 @@ class Key:
     hold: float = 0.0          # seconds the key must be held before the action runs
     long: Do | None = None     # optional second action for a long press (then `action` runs on a short tap)
     long_s: float = 0.0        # how long that long press is (0: deck.presses' default)
-    long_label: str = ""       # set: holding shows a filling ring with this label until `long` fires
+    long_label: str = ""       # label for a filling ring while the key is held
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,7 @@ class Snapshot:
     media: object              # sources.media.MediaState
     playlists: tuple = ()      # sources.media.Playlist, in deck.toml order
     printer: object = None     # sources.printer.PrinterState
+    printer_power: PowerState | None = None
     camera: bytes | None = None
     kvm: object = None         # sources.kvm.KvmState
     kvm_busy: bool = False
@@ -302,14 +305,29 @@ def _print(view: View, snap: Snapshot, svc, cfg: dict) -> dict[int, Key]:
     keys[9] = Key(AppTile("app:cura", "Cura"), Do(svc.launch, (cfg["cura"],)))
     p = snap.printer
     can_change_filament = p is not None and p.can_change_filament
-    keys[6] = Key(AppTile("lucide:flame", "Filament Change", sub=f"{FILAMENT_CHANGE_TEMP} °C", color=color,
-                         dim=not can_change_filament),
-                  Do(svc.printer.filament_change) if can_change_filament else None)
+    power = snap.printer_power
+    if power is None:
+        keys[6] = Key(AppTile("lucide:flame", "Filament Change", sub=f"{FILAMENT_CHANGE_TEMP} °C", color=color,
+                             dim=not can_change_filament),
+                      Do(svc.printer.filament_change) if can_change_filament else None)
+    keys[7] = Key(AppTile("lucide:pause", "Pause", dim=True))
     keys[8] = Key(AppTile("lucide:circle-stop", "Cancel", dim=True))
-    if p is None or not p.online:
-        keys[5] = _offline("Printer")
+    if power is not None and not (p and p.active):
+        can_preheat = power is PowerState.OFF or (power is PowerState.ON and can_change_filament)
+        can_power_off = power is PowerState.ON and can_change_filament
+        preheat_label = "On + Preheat" if power is PowerState.OFF else "Preheat"
+        keys[7] = Key(AppTile("lucide:flame", preheat_label, sub=f"{FILAMENT_CHANGE_TEMP} °C", color=color,
+                             dim=not can_preheat),
+                      Do(svc.printer.filament_change) if can_preheat else None)
+        if power is PowerState.OFF:
+            keys[8] = Key(AppTile("lucide:printer", "Power On", color=GREEN), Do(svc.printer.power_on))
+        else:
+            keys[8] = Key(AppTile("lucide:unplug", "Power Off", sub="hold 2 s", color=RED, dim=not can_power_off),
+                          Do(svc.printer.power_off) if can_power_off else None, hold=2.0, long_label="Power Off")
+    if p is None or not p.online or (power is PowerState.OFF and not p.active):
+        keys[5] = (Key(InfoTile("Printer", "Off", (), accent=MUTED, icon="lucide:unplug"))
+                   if power is PowerState.OFF else _offline("Printer"))
         keys[4] = Key(ArtTile(None, "Camera", fallback="lucide:camera"))
-        keys[7] = Key(AppTile("lucide:pause", "Pause", dim=True))
         return keys
     temps = f"{p.nozzle[0]:.0f}°/{p.nozzle[1]:.0f}° · bed {p.bed[0]:.0f}°"
     name = p.filename.rsplit("/", 1)[-1].removesuffix(".gcode")
@@ -322,8 +340,10 @@ def _print(view: View, snap: Snapshot, svc, cfg: dict) -> dict[int, Key]:
     elif p.state == "complete":
         tile = InfoTile("Done", "100%", (name, f"took {duration(p.elapsed)}"), progress=1.0, accent=GREEN,
                         icon="lucide:circle-check")
-    elif p.state in ("error", "shutdown"):
+    elif p.state in ("error", "shutdown", "unknown"):
         tile = InfoTile("Error", "", (p.message[:60] or p.state, temps), accent=RED, icon="lucide:triangle-alert")
+    elif p.state == "startup":
+        tile = InfoTile("Printer", "Starting", (), accent=AMBER, icon="lucide:printer")
     else:
         heating = p.nozzle[1] > 0 or p.bed[1] > 0
         tile = InfoTile("Heating" if heating else "Ready", f"{p.nozzle[0]:.0f}°", ("nozzle", f"bed {p.bed[0]:.0f}°"),
@@ -335,8 +355,6 @@ def _print(view: View, snap: Snapshot, svc, cfg: dict) -> dict[int, Key]:
         keys[7] = Key(AppTile("lucide:pause", "Pause", color=AMBER), Do(svc.printer.pause))
     elif p.state == "paused":
         keys[7] = Key(AppTile("lucide:play", "Resume", color=GREEN), Do(svc.printer.resume))
-    else:
-        keys[7] = Key(AppTile("lucide:pause", "Pause", dim=True))
     if p.active:
         keys[8] = Key(AppTile("lucide:circle-stop", "Cancel", sub="hold 2 s", color=RED), Do(svc.printer.cancel),
                       hold=2.0)
