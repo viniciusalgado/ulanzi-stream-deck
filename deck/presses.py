@@ -1,0 +1,116 @@
+"""What presses on the deck mean: taps, hold-to-confirm, long presses, and the busy / ok / fail flash on a key.
+
+Pure and clock-driven: it never sleeps, starts threads or runs actions. The caller feeds it events with the
+time they happened and carries out the effects it returns.
+
+    presses = Presses()
+    presses.press(index, key, view, now)      -> [Run(...)] | [Navigate(...)] | []
+    presses.release(index, now)               -> same
+    presses.tick(now)                         -> effects of holds that reached their time; call by next_deadline()
+    presses.completed(index, view, ok, now)   # a Run finished: ok / fail flash for FLASH_S
+    presses.overlay(view, now)                -> {index: "hold" | "busy" | "ok" | "fail"} to draw on that view
+    presses.next_deadline()                   -> monotonic time tick() or overlay() next changes, or None
+
+Rules:
+  - a plain key acts on press;
+  - a `hold` key acts only after being held that long (it shows "hold" meanwhile); letting go early cancels it;
+  - a key with `long` runs `action` on a short tap (on release) and `long` when held for long_press_s;
+  - a Go navigates and clears every flash; a Do shows "busy" on its key until completed(), and its `then`
+    navigates right away. Flashes belong to the view they were made on and only show there.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from .pages import Do, Go, Key, View
+
+FLASH_S = 1.2
+LONG_PRESS_S = 1.5
+
+
+@dataclass(frozen=True)
+class Run:
+    index: int
+    view: View        # the view the key was pressed on (completed() needs it back)
+    action: Do
+
+
+@dataclass(frozen=True)
+class Navigate:
+    view: View
+
+
+@dataclass(frozen=True)
+class _Flash:
+    kind: str         # hold | busy | ok | fail
+    until: float      # only for ok / fail; hold and busy last until replaced
+    view: View
+
+
+@dataclass(frozen=True)
+class _Hold:
+    key: Key
+    view: View
+    at: float         # when it fires
+
+
+class Presses:
+    def __init__(self, *, long_press_s: float = LONG_PRESS_S, flash_s: float = FLASH_S):
+        self._long_press_s = long_press_s
+        self._flash_s = flash_s
+        self._holds: dict[int, _Hold] = {}
+        self._flash: dict[int, _Flash] = {}
+
+    def press(self, index: int, key: Key | None, view: View, now: float) -> list:
+        if key is None or (key.action is None and key.long is None):
+            return []
+        if key.hold > 0 or key.long is not None:
+            if key.hold > 0:
+                self._flash[index] = _Flash("hold", 0.0, view)
+            self._holds[index] = _Hold(key, view, now + (key.hold or self._long_press_s))
+            return []
+        return self._fire(index, key.action, view)
+
+    def release(self, index: int, now: float) -> list:
+        held = self._holds.pop(index, None)
+        if held is None:
+            return []
+        self._flash.pop(index, None)
+        if held.key.long is not None and held.key.action is not None:
+            return self._fire(index, held.key.action, held.view)    # a short tap on a key that also has a long press
+        return []
+
+    def tick(self, now: float) -> list:
+        effects = []
+        for index, held in sorted(self._holds.items()):
+            if held.at <= now:
+                del self._holds[index]
+                effects += self._fire(index, held.key.long or held.key.action, held.view)
+        for index, f in list(self._flash.items()):
+            if f.kind in ("ok", "fail") and f.until <= now:
+                del self._flash[index]
+        return effects
+
+    def completed(self, index: int, view: View, ok: bool, now: float) -> None:
+        self._flash[index] = _Flash("ok" if ok else "fail", now + self._flash_s, view)
+
+    def overlay(self, view: View, now: float) -> dict[int, str]:
+        return {i: f.kind for i, f in self._flash.items()
+                if f.view == view and (f.kind in ("busy", "hold") or f.until > now)}
+
+    def next_deadline(self) -> float | None:
+        times = [h.at for h in self._holds.values()]
+        times += [f.until for f in self._flash.values() if f.kind in ("ok", "fail")]
+        return min(times, default=None)
+
+    def _fire(self, index: int, action, view: View) -> list:
+        if action is None:
+            return []
+        if isinstance(action, Go):
+            self._flash.clear()
+            return [Navigate(action.view)]
+        self._flash[index] = _Flash("busy", 0.0, view)
+        effects = [Run(index, view, action)]
+        if action.then is not None:
+            effects.insert(0, Navigate(action.then))
+        return effects

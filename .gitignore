@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.pytest_cache/
+deck.toml
+# Trademarked / "local use only" icons: python -m deck.fetch_icons recreates them on each machine
+deck/assets/icons/app-*.png
+deck/assets/icons/brand-mainsail.svg

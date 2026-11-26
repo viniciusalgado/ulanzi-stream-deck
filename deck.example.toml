@@ -1,0 +1,75 @@
+# Ulanzi D200 deck settings. Copy this file to deck.toml (which git ignores) and make it yours.
+# Page layouts are code (deck/pages.py); everything machine- or taste-specific is here.
+# After editing: restart the daemon (python -m deck restart).
+
+[deck]
+brightness = 85            # 0-100. The screen never sleeps while the daemon runs.
+start_page = "ai"          # fun | ai | print
+stop_ulanzi_app = true     # the official Ulanzi app also drives the screen; only one program can
+
+# ---------------- Fun ----------------
+[pages.fun]
+# Keys 0, 1, 6. "open" is a URI, a program path, or a Start-menu app id (shell:AppsFolder\...).
+apps = [
+  { name = "Dota 2",  icon = "brand:dota2",   color = "#e2402b", open = "steam://rungameid/570" },
+  { name = "Discord", icon = "brand:discord", color = "#5865F2", open = 'shell:AppsFolder\com.squirrel.Discord.Discord' },
+  { name = "YouTube", icon = "brand:youtube", color = "#ff0033", open = 'shell:AppsFolder\Chrome._crx_agimnaknmldooml.UserData.Profile1' },
+]
+headphones_label = "XM5"   # key 5
+# Keys 2-4. Right-click a playlist in Spotify > Share > Copy link, and paste the id here.
+playlists = [
+  "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
+  "spotify:playlist:37i9dQZF1DX0FOF1IUWK1W",
+  "spotify:playlist:37i9dQZF1DX4dyzvuaRJ0n",
+]
+spotify_app = 'shell:AppsFolder\SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify'
+
+# Bluetooth headphones on key 5 (Fun). Tap: bring their music link back to this PC (reconnects if it dropped,
+# then pauses/resumes so the multipoint headset picks this PC). Hold 1.5 s: drop and reconnect the link.
+# The default output device is never changed.
+[headphones]
+name = "WH-1000XM5"        # as shown in Windows' Bluetooth settings
+
+# ---------------- AI (T3 Code) ----------------
+[pages.ai]
+
+# Each environment is a T3 Code server. "cli" runs that environment's t3 command (used once to get a read-only
+# token, and by the primary one to open new thread drafts). Unreachable ones are simply skipped.
+[[t3.environments]]
+key = "pc"
+name = "This PC"
+url = "http://127.0.0.1:3773"
+cli = ['%USERPROFILE%\.t3\bin\t3.cmd']
+primary = true
+
+[[t3.environments]]
+key = "wsl"
+name = "WSL Ubuntu"
+url = "http://127.0.0.1:3774"
+cli = ["wsl.exe", "-d", "Ubuntu", "--exec", "bash", "-c", 'exec "$(ls -d ~/.t3/wsl-runtime/sha256-*/t3 | tail -1)" "$@"', "t3"]
+
+# ---------------- 3D printing ----------------
+[pages.print]
+project = "3d-modelling"   # T3 Code project (title or folder name) whose threads show here
+mainsail = "http://printer.local/"
+camera_page = "http://printer.local/webcam/?action=stream"
+cura = 'C:\Program Files\UltiMaker Cura 5.12.0\UltiMaker-Cura.exe'
+
+[printer]
+api = "http://printer.local:7125"                      # Moonraker
+webcam = "http://printer.local/webcam/?action=snapshot"
+
+# ---------------- Desk switch (wide key) ----------------
+[kvm]
+esp_config = '%APPDATA%\ugreen-switch\config.json'     # written by scripts/ugreen_provision.py
+presence = ["04D9:A231", "04D9:A09F"]                   # keyboard + mouse behind the UGREEN switch
+
+[[kvm.monitors]]
+model = "27G2"       # AOC 27G2G4: PC on DisplayPort, laptop on HDMI 2
+pc = 0x0F
+laptop = 0x12
+
+[[kvm.monitors]]
+model = "24G2HE5"    # AOC 24G2W1G5: PC on HDMI 1, laptop on D-sub
+pc = 0x11
+laptop = 0x01
