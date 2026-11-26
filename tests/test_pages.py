@@ -21,12 +21,13 @@ CFG = {"apps": [{"name": "Dota 2", "icon": "brand:dota2", "open": "steam://runga
 
 def svc():
     """Exactly what pages may call on the App; test_pages_bind_only_what_the_real_app_has keeps it honest."""
-    return NS(t3=NS(open_thread=lambda t: None, open_app=lambda: None),
-              media=NS(prev=lambda: None, next=lambda: None, toggle=lambda: None, play_playlist=lambda u: None),
+    return NS(desktop=NS(open_thread=lambda t: None, open_app=lambda: None, launch=lambda t: None,
+                         media_prev=lambda: None, media_next=lambda: None, media_toggle=lambda: None,
+                         play_playlist=lambda u: None, reclaim_headphones=lambda: None,
+                         reset_headphones=lambda: None),
               printer=NS(pause=lambda: None, resume=lambda: None, cancel=lambda: None, filament_change=lambda: None),
-              launch=lambda t: None, toggle_kvm=lambda: None,
-              camera_snapshot=lambda: None, toggle_dictation=lambda: None,
-              new_thread=lambda p: None, reclaim_headphones=lambda: None, reset_headphones=lambda: None)
+              toggle_kvm=lambda: None, camera_snapshot=lambda: None, toggle_dictation=lambda: None,
+              new_thread=lambda p: None)
 
 
 def threads(n, project=PX, state="ready"):
@@ -73,7 +74,7 @@ def test_thread_key_opens_it_and_shows_its_state():
     t = threads(1, state="working")
     k = pages.build(View("ai"), snap(t3=T3State({"pc": True}, (PX,), t)), s, CFG)[3]
     assert isinstance(k.tile, ThreadTile) and k.tile.state == "working" and k.tile.project == "other"
-    assert k.action.fn == s.t3.open_thread and k.action.args == (t[0],)
+    assert k.action.fn == s.desktop.open_thread and k.action.args == (t[0],)
 
 
 def test_new_thread_picker_lists_projects_per_environment():
@@ -92,14 +93,14 @@ def test_print_page_project_threads_and_guarded_cancel():
     idle = pages.build(View("print"), snap(t3=t3, printer=PrinterState(online=True, state="standby")), s, CFG)
     assert idle[1].tile.project == "3d-modelling" and isinstance(idle[2].tile, Blank)
     assert idle[4].tile.label == "Camera" and idle[4].action == Do(s.camera_snapshot)
-    assert idle[4].long == Do(s.launch, (CFG["camera_page"],))
+    assert idle[4].long == Do(s.desktop.launch, (CFG["camera_page"],))
     assert idle[6].tile.label == "Filament Change" and idle[6].action.fn == s.printer.filament_change
     assert idle[7].action is None
     assert idle[8].tile.label == "Cancel" and idle[8].action is None
     offline = pages.build(View("print"), snap(), s, CFG)
     assert all(offline[i].action is None for i in (4, 6, 7, 8))
     done = pages.build(View("print"), snap(printer=PrinterState(online=True, state="complete")), s, CFG)
-    assert done[5].tile.header == "Done" and done[5].action == Do(s.launch, (CFG["mainsail"],))
+    assert done[5].tile.header == "Done" and done[5].action == Do(s.desktop.launch, (CFG["mainsail"],))
     printing = pages.build(View("print"), snap(t3=t3, printer=PrinterState(online=True, state="printing", progress=.4)),
                            s, CFG)
     assert printing[7].action.fn == s.printer.pause
@@ -113,15 +114,15 @@ def test_fun_page_playlists_and_now_playing():
     pls = (Playlist("spotify:playlist:a", "A", None), Playlist("spotify:playlist:b", "B", None))
     keys = pages.build(View("fun"), snap(playlists=pls, media=MediaState(True, True, "Song", "Artist")), s, CFG)
     assert keys[2].action.args == ("spotify:playlist:a",) and keys[3].tile.label == "B"
-    assert keys[8].action.fn == s.media.toggle and keys[8].tile.glyph == "lucide:pause"
+    assert keys[8].action.fn == s.desktop.media_toggle and keys[8].tile.glyph == "lucide:pause"
     assert keys[0].action.args == ("steam://rungameid/570",)
 
 
 def test_headphones_key_tap_reclaims_and_hold_resets():
     s = svc()
     off = pages.build(View("fun"), snap(headphones=HeadphoneState(True, False, 40)), s, CFG)[5]
-    assert off.tile.sub == "tap to connect" and off.action.fn == s.reclaim_headphones
-    assert off.long.fn == s.reset_headphones
+    assert off.tile.sub == "tap to connect" and off.action.fn == s.desktop.reclaim_headphones
+    assert off.long.fn == s.desktop.reset_headphones
     on = pages.build(View("fun"), snap(headphones=HeadphoneState(True, True, 60)), s, CFG)[5]
     assert on.tile.sub == "on this PC · 60%"
 
@@ -172,9 +173,51 @@ def test_pages_bind_only_what_the_real_app_has():
                         bound.add(action.fn.__qualname__)
     fake = svc()
     expected = {f"{type(owner).__qualname__}.{name}"
-                for owner, names in ((app, ["launch", "toggle_kvm", "camera_snapshot", "toggle_dictation",
-                                            "new_thread", "reclaim_headphones", "reset_headphones"]),
-                                     (app.t3, vars(fake.t3)), (app.media, vars(fake.media)),
-                                     (app.printer, vars(fake.printer)))
+                for owner, names in ((app, ["toggle_kvm", "camera_snapshot", "toggle_dictation", "new_thread"]),
+                                     (app.desktop, vars(fake.desktop)), (app.printer, vars(fake.printer)))
                 for name in names}
     assert bound == expected
+
+
+def marked_svc():
+    """svc() with the desktop actions marked the way the real ones are (deck.desktop.requires)."""
+    from deck.desktop import ACTIONS
+    s = svc()
+    for name, fn in vars(s.desktop).items():
+        fn.requires = ACTIONS[name]
+    s.toggle_dictation.requires = s.new_thread.requires = "input"
+    return s
+
+
+def test_signed_out_shows_only_what_works_without_a_session():
+    s = marked_svc()
+    printing = PrinterState(online=True, state="printing", progress=.4)
+    for view in (View("fun"), View("ai"), View("print")):          # whatever page was up: the print page
+        keys = pages.build(view, snap(desktop="signed_out", printer=printing, now=0.0), s, CFG)
+        assert keys[0].tile.value == "Signed out" and keys[1].tile.header == "Clock"
+        assert all(isinstance(keys[i].tile, Blank) for i in (2, 3, 9))
+        assert keys[4].action == Do(s.camera_snapshot) and keys[4].long is None    # still yes, stream no
+        assert keys[5].tile.header == "Printing" and keys[5].action is None        # status yes, Mainsail no
+        assert keys[7].action == Do(s.printer.pause) and keys[8].action == Do(s.printer.cancel)
+        assert keys[8].hold == 2.0
+        assert keys[6].tile.label == "Filament Change"
+        assert keys[10].action is None and keys[11].action is None and keys[10].tile.dim
+        assert keys[12].action == Go(View("print")) and keys[13].action == Do(s.toggle_kvm)
+        for k in keys.values():
+            for action in (k.action, k.long):
+                assert not isinstance(action, Do) or getattr(action.fn, "requires", None) is None
+
+
+def test_locked_keeps_music_and_disables_what_needs_the_desktop():
+    s = marked_svc()
+    playing = MediaState(True, True, "Song", "Artist")
+    fun = pages.build(View("fun"), snap(desktop="locked", media=playing,
+                                         playlists=(Playlist("spotify:playlist:a", "A", None),)), s, CFG)
+    assert fun[8].action == Do(s.desktop.media_toggle) and fun[9].action == Do(s.desktop.media_next)
+    assert fun[0].action is None and fun[0].tile.dim                  # launching Dota 2
+    assert fun[2].action is None                                      # starting a playlist clicks in Spotify
+    ai = pages.build(View("ai"), snap(desktop="locked", t3=T3State({"pc": True}, (PX,), threads(2), (PC,))), s, CFG)
+    assert ai[1].action is None and ai[3].action is None              # dictate, open a thread
+    assert ai[2].action == Go(View("new_thread"))                     # browsing pages still works
+    away = pages.build(View("fun"), snap(desktop="away", media=playing), s, CFG)
+    assert away[8].action is None and away[13].action == Do(s.toggle_kvm)

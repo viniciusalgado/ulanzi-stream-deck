@@ -25,23 +25,33 @@ Settled, archived, snoozed and subagent threads never appear. The AI page key sh
 copy deck.example.toml deck.toml        # then edit it: your apps, playlists, printer, monitors
 C:\Python314\python.exe -m venv .venv
 .venv\Scripts\python -m pip install hidapi pillow resvg-py winrt-runtime winrt-Windows.Media.Control winrt-Windows.Storage.Streams winrt-Windows.Foundation pytest
-.venv\Scripts\python -m deck install      # task "UlanziDeckDaemon": starts at logon, restarts within 5 min if it exits
+# from an ADMINISTRATOR terminal: copies the repo to C:\Program Files\UlanziDeck, installs the service + agent
+.venv\Scripts\python -m deck deploy
 ```
+
+The deck runs as a Windows service, so it works from boot to shutdown, whether anyone is signed in or not
+(docs/plans/service-mode.md). With nobody signed in it shows the 3D Print page with every key that works without
+a session (camera still, printer status, filament change, pause/resume, cancel), a clock, and the desk switch.
+Locked: keys that would open windows or type are dimmed; music, printer and desk keep working.
+Code only reaches Program Files through `deck deploy`: never edit files there.
 
 ## Everyday
 
 | | |
 |---|---|
-| change apps, playlists, printer, monitors | edit `deck.toml`, then `.venv\Scripts\python -m deck restart` |
+| change apps, playlists, printer, monitors, or code | edit here, then `.venv\Scripts\python -m deck deploy` (administrator) |
+| restart what's deployed | `.venv\Scripts\python -m deck restart` (no admin) |
+| try a change without deploying | `sc stop UlanziDeck` (allowed without admin), then `.venv\Scripts\python -m deck run` |
 | see all pages without the deck | `.venv\Scripts\python -m deck preview` (PNGs in `%APPDATA%\ulanzi-deck\preview`) |
 | what the sources report | `.venv\Scripts\python -m deck status` |
 | switch the desk from a terminal | `.venv\Scripts\python -m deck switch laptop` / `pc` |
-| logs | `%APPDATA%\ulanzi-deck\deck.log` |
+| logs | service `C:\ProgramData\ulanzi-deck\deck.log`, monitor helper `...\console.log`, agent `%APPDATA%\ulanzi-deck\agent.log` |
+| ESP32 token or IP changed | `deck deploy` again (the service keeps its own copy of the ESP config) |
 | the deck froze | `.venv\Scripts\python -m deck reset` (restarts it over USB, no admin); if that doesn't help, replug it |
 | headphones back to this PC | Fun key 5: tap = reconnect / re-take playback, hold 1.5 s = drop and reconnect; or `python -m deck headphones reclaim` |
 | preheat for a filament change | 3D Print key 6 while idle heats the hotend to 200 °C and beeps on the printer when ready |
 | playlist keys start playback (Premium) | see `deck/sources/spotify.py`, then `python -m deck spotify-login <client id>` |
-| back to the Ulanzi app | `.venv\Scripts\python -m deck uninstall` |
+| back to the Ulanzi app | `.venv\Scripts\python -m deck undeploy` (administrator) |
 | tests | `.venv\Scripts\python -m pytest -q` |
 
 ## Code map
@@ -51,7 +61,14 @@ C:\Python314\python.exe -m venv .venv
 | `deck/device.py` | the D200 USB protocol: `Deck.show(images)` sends only what changed, keeps the screen on, reconnects |
 | `deck/render.py` | tile values (`AppTile`, `ThreadTile`, …) → 196×196 PNG; the visual language lives here |
 | `deck/pages.py` | pure layout: `build(view, snapshot)` → what each key shows and does |
-| `deck/app.py` | the daemon loop: wires sources, presses and the deck together; runs actions on workers |
+| `deck/app.py` | the deck loop: wires sources, presses and the deck together; runs actions on workers |
+| `deck/desktop.py` | everything that needs a signed-in session (T3, music, headphones, launching), and presence |
+| `deck/agent.py` | service ↔ agent protocol, both ends: `RemoteDesktop` (service side) and the agent loop |
+| `deck/console.py` | monitor switching for the service, via a SYSTEM helper in the console session |
+| `deck/service.py` | the service: App + RemoteDesktop + ConsoleDdc, following who is at the PC |
+| `deck/deploy.py` | deploy / undeploy / restart: the Program Files copy, the service, the agent task |
+| `deck/link.py`, `deck/wire.py` | calls between processes, and the JSON-only values they carry (no pickle) |
+| `deck/winpipe.py`, `winsession.py`, `winservice.py` | pipes with access lists, sessions, the Service Control Manager |
 | `deck/presses.py` | pure, clock-driven: what a press means (tap, hold-to-confirm, long press) and each key's flash |
 | `deck/sources/registry.py` | every source's poll thread and latest state (names = `Snapshot` fields), `refresh` after an action |
 | `deck/pnp.py` | Windows Plug and Play: is the deck stuck in boot mode, restart it over USB |

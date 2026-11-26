@@ -184,12 +184,13 @@ class Kvm:
         self._warm = False
 
     @classmethod
-    def from_config(cls, cfg: dict) -> "Kvm":
+    def from_config(cls, cfg: dict, *, ddc=None) -> "Kvm":
+        """`ddc`: anything with Ddc's models() / set_inputs(); the service passes the console helper's."""
         from ..paths import STATE_DIR
         mons = [MonitorInput(m["model"], int(m["pc"]), int(m["laptop"])) for m in cfg.get("monitors", [])]
         presence = [tuple(int(x, 16) for x in s.split(":")) for s in cfg.get("presence", [])]
         esp = Esp(cfg["esp_config"]) if cfg.get("esp_config") else None
-        return cls(mons, presence, esp, side_file=STATE_DIR / "desk-side.txt")
+        return cls(mons, presence, esp, ddc=ddc, side_file=STATE_DIR / "desk-side.txt")
 
     def keyboard_here(self) -> bool:
         return any(self._hid.enumerate(vid, pid) for vid, pid in self.presence)

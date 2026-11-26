@@ -1,6 +1,11 @@
 """The daemon: polls the sources, turns presses into actions, and keeps the deck showing the current page.
 
-    App(load_config()).run()      # blocks; one instance per user (see __main__)
+    App(load_config()).run()                                   # `deck run`: everything in this process
+    App(cfg, desktop=RemoteDesktop(...), ddc=ConsoleDdc(...))  # the service: see deck.service
+
+The App owns the deck, the pages and the sources that work with nobody signed in (printer, desk switch). The
+desktop features (T3, music, headphones, launching) come from `desktop` (deck.desktop.Desktop, or the agent's
+RemoteDesktop in the service), which also says whether anyone is signed in.
 
 Flow: the sources (deck.sources.registry, one thread each) store their state and mark the screen dirty -> the
 main loop builds the current page (deck.pages, pure) -> renders tiles (cached) -> Deck.show() sends only what
@@ -20,13 +25,10 @@ from .device import Deck
 from .pages import Go, Key, Snapshot, View
 from .presses import Navigate, Presses, Run
 from .render import Flashed, render
-from .sources.headphones import HeadphoneState, Headphones
+from .desktop import Desktop, requires
 from .sources.kvm import Kvm
-from .sources.media import Media, MediaState
 from .sources.printer import Printer
 from .sources.registry import Sources
-from .sources.spotify import SpotifyApi
-from .sources.t3 import T3, T3State, environments_from_config
 
 log = logging.getLogger(__name__)
 CAMERA_SHOW_S = 60    # a camera snapshot stays on its key this long, then the icon is back
@@ -34,22 +36,17 @@ DRAFT_S = 180         # after "New thread", Dictate says it will type into that 
 
 
 class App:
-    def __init__(self, cfg: dict, *, deck_factory=Deck):
+    def __init__(self, cfg: dict, *, deck_factory=Deck, desktop=None, ddc=None):
         self.cfg = cfg
-        self.t3 = T3(environments_from_config(cfg["t3"]["environments"]))
-        self.media = Media(cfg["pages"]["fun"].get("playlists", []), SpotifyApi.load())
+        self.desktop = desktop if desktop is not None else Desktop.from_config(cfg)
         pr = cfg["printer"]
         self.printer = Printer(pr["api"], pr.get("webcam"))
-        self.kvm = Kvm.from_config(cfg["kvm"])
-        self.headphones = Headphones(cfg.get("headphones", {}).get("name", "WH-1000XM5"))
+        self.kvm = Kvm.from_config(cfg["kvm"], ddc=ddc)
         self.view = View(cfg["deck"].get("start_page", "ai"))
         self.sources = Sources(on_change=self._mark_dirty)    # names = pages.Snapshot fields
-        self.sources.add("t3", self.t3.poll, every=2.0, initial=T3State(envs=tuple(self.t3.envs)))
-        self.sources.add("media", self.media.poll, every=1.0, initial=MediaState())
+        self.desktop.attach(self.sources)                     # t3, media, playlists, headphones, desktop
         self.sources.add("printer", self.printer.poll, every=lambda: 2.0 if self.view.page == "print" else 6.0)
-        self.sources.add("headphones", self.headphones.poll, every=3.0, initial=HeadphoneState())
         self.sources.add("kvm", self.kvm.poll, every=3.0)
-        self.sources.add("playlists", self._playlists, every=600.0, initial=())
         self.sources.task("guard", self._guard, every=30.0)
         self._kvm_busy = False
         self._kvm_message = ("", "info", 0.0)     # text, level, shown until (time.time)
@@ -67,9 +64,6 @@ class App:
                                  on_connect=self._mark_dirty)
 
     # ----- services the pages call (on a worker thread) -----
-
-    def launch(self, target: str) -> None:
-        winutil.launch(target)
 
     def toggle_kvm(self) -> None:
         """The desk key: go to the other side of where the monitors are *now* (not where they were when drawn)."""
@@ -113,29 +107,17 @@ class App:
     def _set_kvm_message(self, text: str, level: str) -> None:
         self._kvm_message = (text, level, time.time() + 10)
 
+    @requires("input")
     def toggle_dictation(self) -> None:
-        self.t3.dictate()
+        self.desktop.dictate()
         self._dictating_until = 0.0 if self._dictating_until > time.time() else time.time() + 120
 
+    @requires("input")
     def new_thread(self, project) -> None:
         """Open a new draft in T3 Code; the next Dictate press types into it (T3 dictates into the open thread)."""
-        self.t3.new_thread(project)
+        self.desktop.new_thread(project)
         self._dictating_until = 0.0
         self._draft_until = time.time() + DRAFT_S
-
-    def reclaim_headphones(self) -> None:
-        try:
-            self.headphones.reclaim(self.media)
-        finally:
-            self.sources.refresh("headphones")
-            self._mark_dirty()
-
-    def reset_headphones(self) -> None:
-        try:
-            self.headphones.reset(self.media)
-        finally:
-            self.sources.refresh("headphones")
-            self._mark_dirty()
 
     # ----- running -----
 
@@ -210,9 +192,6 @@ class App:
         with self._cond:
             self._dirty = True
             self._cond.notify()
-
-    def _playlists(self):
-        return tuple(self.media.playlist(uri) for uri in self.media.playlists)
 
     def _guard(self):
         if self.cfg["deck"].get("stop_ulanzi_app", True) and winutil.is_running("UlanziDeck.exe"):

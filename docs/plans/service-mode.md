@@ -1,6 +1,12 @@
 # Plan: the deck works with nobody signed in (option C)
 
-Status: proposed, 2026-11-26. Nothing built yet. Phase 0 needs an administrator shell.
+Status, 2026-11-26: phases 1-6 built on branch `service-mode`. Decisions taken:
+- the signed-out page keeps every key that works without a session;
+- code runs only from `C:\Program Files\UlanziDeck`, copied there by `python -m deck deploy`;
+- no pywin32: ctypes for the service, the pipes and the sessions.
+
+Not yet run as SYSTEM: phase 0's questions (HID from session 0, DDC from the console helper) get answered by the
+first `deck deploy` and the phase 7 checklist.
 
 ## Goal
 

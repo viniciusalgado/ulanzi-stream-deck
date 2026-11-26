@@ -14,12 +14,20 @@ Bottom row on every page: 10-12 switch pages (Fun / AI / 3D Print), 13 moves the
   New:      0 Back     1 Environment                    2-9 projects of that environment, most recently used first
   3D Print: 0 New thread (3d project)  1-3 its threads  4 camera (tap: snapshot, hold: stream)
             5 print status  6 filament change  7 pause/resume  8 cancel (hold)  9 Cura
+
+Nobody signed in (Snapshot.desktop == "signed_out"): only the 3D Print page, with every key that works
+without a Windows session: camera still, printer status, filament change, pause/resume, cancel, desk switch;
+plus "Signed out" and a clock where the T3 keys were. Fun and AI say "sign in".
+Locked, or the agent missing: keys whose action needs the desktop (deck.desktop.usable) are drawn dimmed and
+do nothing; the rest of the page is unchanged.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, replace
 from typing import Callable
 
+from .desktop import usable
 from .render import (AMBER, BLUE, FG, GREEN, MUTED, RED, AppTile, ArtTile, Blank, InfoTile, SwitchTile,
                      ThreadTile)
 from .sources.printer import FILAMENT_CHANGE_TEMP
@@ -71,6 +79,7 @@ class Snapshot:
     dictating: bool = False
     new_draft: bool = False    # a New thread draft was just opened: Dictate will type into it
     headphones: object = None  # sources.headphones.HeadphoneState
+    desktop: str = "here"      # here | locked | away | signed_out (see deck.desktop)
     now: float = 0.0
 
 
@@ -91,11 +100,42 @@ def duration(seconds: float) -> str:
 
 
 def build(view: View, snap: Snapshot, svc, cfg: dict) -> dict[int, Key]:
+    signed_out = snap.desktop == "signed_out"
+    if signed_out:
+        view = View("print", offset=0)
     keys: dict[int, Key] = {i: Key(Blank()) for i in range(14)}
     page = {"fun": _fun, "ai": _ai, "new_thread": _new_thread, "print": _print}.get(view.page, _ai)
     keys.update(page(view, snap, svc, cfg))
     keys.update(_bottom(view, snap, svc))
-    return keys
+    if signed_out:
+        keys.update(_signed_out(snap))
+    return {i: _gate(k, snap.desktop) for i, k in keys.items()}
+
+
+def _gate(key: Key, presence: str) -> Key:
+    """Drop the actions the desktop can't run right now; an AppTile left with nothing to do is drawn dimmed."""
+    action = key.action if not isinstance(key.action, Do) or usable(key.action.fn, presence) else None
+    long = key.long if key.long is None or usable(key.long.fn, presence) else None
+    if action is key.action and long is key.long:
+        return key
+    tile = key.tile
+    if action is None and long is None and isinstance(tile, AppTile):
+        tile = replace(tile, dim=True)
+    return Key(tile, action, key.hold if action is not None else 0.0, long)
+
+
+def _signed_out(snap: Snapshot) -> dict[int, Key]:
+    """What replaces the session-only keys of the 3D Print page when nobody is signed in."""
+    t = time.localtime(snap.now)
+    nav = {i: Key(AppTile(icon, label, sub="sign in", color=MUTED, bg="#15171c", dim=True))
+           for i, (page, icon, label) in enumerate(NAV) if page != "print"}
+    return {
+        0: Key(InfoTile("This PC", "Signed out", ("sign in for T3,", "music & apps"), accent=MUTED,
+                        icon="lucide:monitor")),
+        1: Key(InfoTile("Clock", time.strftime("%H:%M", t), (time.strftime("%a %d %b", t),), accent=MUTED)),
+        2: Key(Blank()), 3: Key(Blank()), 9: Key(Blank()),
+        **{10 + i: k for i, k in nav.items()},
+    }
 
 
 # ---------------- shared ----------------
@@ -149,7 +189,7 @@ def _thread_key(t, snap: Snapshot, svc) -> Key:
               "ready": f"Ready · {age(snap.now - t.since)}"}[t.state]
     return Key(ThreadTile(t.title, t.project.title, t.project.icon, t.state, status,
                           phase=int(snap.now) if t.state == "working" else 0),
-               Do(svc.t3.open_thread, (t,)))
+               Do(svc.desktop.open_thread, (t,)))
 
 
 def _paged(items: list, slots: list[int], view: View, make: Callable, more_view: Callable[[int], View]) -> dict:
@@ -181,21 +221,21 @@ def _fun(view: View, snap: Snapshot, svc, cfg: dict) -> dict[int, Key]:
     apps = cfg.get("apps", [])
     for slot, app in zip((0, 1, 6), apps):
         keys[slot] = Key(AppTile(app["icon"], app["name"], color=app.get("color", FG)),
-                         Do(svc.launch, (app["open"],)))
+                         Do(svc.desktop.launch, (app["open"],)))
     for slot, pl in zip((2, 3, 4), snap.playlists):
         keys[slot] = Key(ArtTile(pl.cover, pl.title, fallback="lucide:list-music"),
-                         Do(svc.media.play_playlist, (pl.uri,)))
+                         Do(svc.desktop.play_playlist, (pl.uri,)))
     keys[5] = _headphones_key(snap, svc, cfg)
     m = snap.media
     has = getattr(m, "available", False)
-    keys[7] = Key(AppTile("lucide:skip-back", "Previous", dim=not has), Do(svc.media.prev) if has else None)
-    keys[9] = Key(AppTile("lucide:skip-forward", "Next", dim=not has), Do(svc.media.next) if has else None)
+    keys[7] = Key(AppTile("lucide:skip-back", "Previous", dim=not has), Do(svc.desktop.media_prev) if has else None)
+    keys[9] = Key(AppTile("lucide:skip-forward", "Next", dim=not has), Do(svc.desktop.media_next) if has else None)
     if has:
         keys[8] = Key(ArtTile(m.art, m.title or "Playing", m.artist, glyph="lucide:pause" if m.playing else "lucide:play",
-                              accent=GREEN if m.playing else None), Do(svc.media.toggle))
+                              accent=GREEN if m.playing else None), Do(svc.desktop.media_toggle))
     else:
         keys[8] = Key(AppTile("brand:spotify", "Spotify", sub="not playing", color="#1ed760"),
-                      Do(svc.launch, (cfg.get("spotify_app", "spotify:"),)))
+                      Do(svc.desktop.launch, (cfg.get("spotify_app", "spotify:"),)))
     return keys
 
 
@@ -209,12 +249,12 @@ def _headphones_key(snap: Snapshot, svc, cfg: dict) -> Key:
         tile = AppTile("lucide:headphones", label, sub=f"on this PC{battery}", color=GREEN)
     else:
         tile = AppTile("lucide:headphones", label, sub="tap to connect", color=AMBER, badge="!", badge_color=AMBER)
-    return Key(tile, Do(svc.reclaim_headphones), long=Do(svc.reset_headphones))
+    return Key(tile, Do(svc.desktop.reclaim_headphones), long=Do(svc.desktop.reset_headphones))
 
 
 def _ai(view: View, snap: Snapshot, svc, cfg: dict) -> dict[int, Key]:
     keys = {
-        0: Key(AppTile("app:t3code", "T3 Code", icon_scale=0.5), Do(svc.t3.open_app)),
+        0: Key(AppTile("app:t3code", "T3 Code", icon_scale=0.5), Do(svc.desktop.open_app)),
         1: Key(_dictate_tile(snap), Do(svc.toggle_dictation)),
         2: Key(AppTile("lucide:square-plus", "New thread", sub="pick project", color=PAGE_COLORS["ai"]),
                Go(View("new_thread"))),
@@ -287,7 +327,7 @@ def _print(view: View, snap: Snapshot, svc, cfg: dict) -> dict[int, Key]:
             keys[1] = Key(InfoTile("3D threads", "", ("none active",), accent=GREEN, icon="lucide:circle-check"))
     else:
         keys[0] = Key(AppTile("lucide:square-plus", "New thread", sub=f"no project '{want}'", dim=True))
-    keys[9] = Key(AppTile("app:cura", "Cura"), Do(svc.launch, (cfg["cura"],)))
+    keys[9] = Key(AppTile("app:cura", "Cura"), Do(svc.desktop.launch, (cfg["cura"],)))
     p = snap.printer
     can_change_filament = p is not None and p.can_change_filament
     keys[6] = Key(AppTile("lucide:flame", "Filament Change", sub=f"{FILAMENT_CHANGE_TEMP} °C", color=color,
@@ -316,9 +356,9 @@ def _print(view: View, snap: Snapshot, svc, cfg: dict) -> dict[int, Key]:
         heating = p.nozzle[1] > 0 or p.bed[1] > 0
         tile = InfoTile("Heating" if heating else "Ready", f"{p.nozzle[0]:.0f}°", ("nozzle", f"bed {p.bed[0]:.0f}°"),
                         accent=AMBER if heating else GREEN, icon="lucide:flame" if heating else "lucide:thermometer")
-    keys[5] = Key(tile, Do(svc.launch, (cfg["mainsail"],)))
+    keys[5] = Key(tile, Do(svc.desktop.launch, (cfg["mainsail"],)))
     keys[4] = Key(ArtTile(snap.camera, "Camera", fallback="lucide:camera"), Do(svc.camera_snapshot),
-                  long=Do(svc.launch, (cfg["camera_page"],)))   # tap: one still on the key; hold: live stream
+                  long=Do(svc.desktop.launch, (cfg["camera_page"],)))   # tap: one still on the key; hold: live stream
     if p.state == "printing":
         keys[7] = Key(AppTile("lucide:pause", "Pause", color=AMBER), Do(svc.printer.pause))
     elif p.state == "paused":

@@ -1,43 +1,36 @@
-"""Ulanzi D200 deck daemon.
+r"""Ulanzi D200 deck.
 
-    .venv\\Scripts\\python -m deck run              run in this terminal (logs here and in %APPDATA%\\ulanzi-deck)
-    .venv\\Scripts\\python -m deck install          start at logon + restart if it exits (instead of the Ulanzi app)
-    .venv\\Scripts\\python -m deck uninstall        stop, remove autostart, give the Ulanzi app its autostart back
-    .venv\\Scripts\\python -m deck restart          after editing deck.toml or the code
-    .venv\\Scripts\\python -m deck reset            the deck froze: restart it over USB (no replug, no admin)
-    .venv\\Scripts\\python -m deck headphones [reclaim|reset]   headphone state, or bring them back to this PC
-    .venv\\Scripts\\python -m deck preview [dir]    render every page to PNG with live data, without the deck
-    .venv\\Scripts\\python -m deck status           what each source reports right now
-    .venv\\Scripts\\python -m deck switch pc|laptop move monitors + USB switch from the command line
-    .venv\\Scripts\\python -m deck monitors         DDC/CI models this PC can see
-    .venv\\Scripts\\python -m deck spotify-login ID let playlist keys start playback (see deck/sources/spotify.py)
+Normal use: the deck runs as a Windows service from C:\Program Files\UlanziDeck, deployed from this repo, so
+it works from boot to shutdown, signed in or not (docs/plans/service-mode.md):
+    .venv\Scripts\python -m deck deploy           (administrator) copy this repo to Program Files and (re)start
+    .venv\Scripts\python -m deck undeploy         (administrator) remove it, give the Ulanzi app its autostart back
+    .venv\Scripts\python -m deck restart          restart the deployed service and agent (no admin)
+    .venv\Scripts\python -m deck status           what's deployed and running, and what each source reports
+Development and tools:
+    .venv\Scripts\python -m deck run              everything in this terminal (refused while the service runs)
+    .venv\Scripts\python -m deck preview [dir]    render every page (and the signed-out page) to PNG, live data
+    .venv\Scripts\python -m deck reset            the deck froze: restart it over USB (no replug, no admin)
+    .venv\Scripts\python -m deck headphones [reclaim|reset]   headphone state, or bring them back to this PC
+    .venv\Scripts\python -m deck switch pc|laptop move monitors + USB switch from the command line
+    .venv\Scripts\python -m deck monitors         DDC/CI models this PC can see
+    .venv\Scripts\python -m deck spotify-login ID let playlist keys start playback (see deck/sources/spotify.py)
+Started by the deployed copy (deckd.py), not by hand: service, agent, console-helper.
 """
 from __future__ import annotations
 
 import logging
 import logging.handlers
-import os
-import subprocess
 import sys
 import time
 from pathlib import Path
 
-from .paths import LOG_FILE, REPO, STATE_DIR
-
-PID_FILE = STATE_DIR / "deck.pid"
-RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-OUR_VALUE = "UlanziDeckDaemon"
-ULANZI_VALUE = "UlanziDeck"
-ULANZI_BACKUP = STATE_DIR / "ulanzi-autostart.txt"
-PYTHONW = REPO / ".venv" / "Scripts" / "pythonw.exe"
-LAUNCHER = REPO / "run_deck.pyw"
-TASK_NAME = "UlanziDeckDaemon"
-WATCHDOG_MINUTES = 5
+from .paths import LOG_FILE, STATE_DIR
 
 
-def _logging(console: bool) -> None:
+
+def _logging(console: bool, file: Path = LOG_FILE) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    handlers: list[logging.Handler] = [logging.handlers.RotatingFileHandler(LOG_FILE, maxBytes=1_000_000,
+    handlers: list[logging.Handler] = [logging.handlers.RotatingFileHandler(file, maxBytes=1_000_000,
                                                                              backupCount=3, encoding="utf-8")]
     if console and sys.stderr is not None:
         handlers.append(logging.StreamHandler())
@@ -54,13 +47,13 @@ def run(console: bool = True) -> None:
     winutil.dpi_aware()
     log = logging.getLogger("deck")
     if winutil.is_admin():
-        # An elevated daemon can't be stopped or replaced from a normal terminal or by the logon task, so one
-        # that hangs stays hung (2026-11-25). Run it as the user, through the task when it's installed.
-        if _task_installed():
-            log.warning("not running the deck daemon as administrator; starting it through the logon task instead")
-            start()
-            return
-        log.error("don't run the deck daemon from an administrator terminal (it couldn't be stopped later)")
+        # An elevated daemon can't be stopped or replaced from a normal terminal, so one that hangs stays hung
+        # (2026-11-25).
+        log.error("don't run the deck from an administrator terminal (it couldn't be stopped later)")
+        sys.exit(1)
+    from .deploy import service_state
+    if service_state() == "RUNNING":
+        log.error("the deck service is running and owns the deck; stop it first (sc stop UlanziDeck)")
         sys.exit(1)
     for _ in range(20):  # on a restart the old instance may still be exiting: give it up to 10 s
         if winutil.single_instance("UlanziDeckDaemon"):
@@ -70,7 +63,6 @@ def run(console: bool = True) -> None:
     else:
         log.error("the deck daemon is already running (python -m deck restart to restart it)")
         sys.exit(1)
-    PID_FILE.write_text(str(os.getpid()))
     while True:  # supervisor: a crash restarts the app instead of leaving the deck frozen
         app = None
         try:
@@ -88,39 +80,6 @@ def run(console: bool = True) -> None:
             time.sleep(5)
 
 
-def _ps(script: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                          capture_output=True, text=True, creationflags=0x08000000)  # no console window
-
-
-def _task_installed() -> bool:
-    return _ps(f"if (Get-ScheduledTask -TaskName '{TASK_NAME}' -ErrorAction SilentlyContinue) {{ 'yes' }}"
-               ).stdout.strip() == "yes"
-
-
-def start() -> None:
-    if _task_installed():  # run it under the watchdog task, so the task keeps track of it
-        # A just-killed instance can take a moment to leave the Running state; until then a new run is ignored.
-        _ps(f"$i = 0; while ((Get-ScheduledTask -TaskName '{TASK_NAME}').State -eq 'Running' -and $i -lt 50) "
-            f"{{ Start-Sleep -Milliseconds 100; $i++ }}; Start-ScheduledTask -TaskName '{TASK_NAME}'")
-        return
-    subprocess.Popen([str(PYTHONW), str(LAUNCHER)], cwd=str(REPO),
-                     creationflags=0x00000008 | 0x00000200, close_fds=True)  # detached, own process group
-
-
-def stop() -> bool:
-    if not PID_FILE.is_file():
-        return False
-    pid = PID_FILE.read_text().strip()
-    r = subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, text=True)
-    if r.returncode not in (0, 128):  # 128 = no such process: it already exited
-        print(f"Couldn't stop the running daemon (PID {pid}): {(r.stdout + r.stderr).strip()}\n"
-              "If it was started from an administrator terminal, stop it from one: taskkill /PID " + pid + " /F")
-        return False
-    PID_FILE.unlink(missing_ok=True)
-    return r.returncode == 0
-
-
 def reset_deck() -> None:
     """Restart the deck's USB device. Unfroze the D200's firmware on 2026-11-25; the daemon reconnects by itself."""
     from .pnp import WindowsPnp
@@ -130,94 +89,44 @@ def reset_deck() -> None:
     print(message)
 
 
-def _task_xml() -> str:
-    from datetime import datetime
-    from xml.sax.saxutils import escape
-    user = escape(os.environ.get("USERDOMAIN", "") + "\\" + os.environ["USERNAME"])
-    now = datetime.now().replace(microsecond=0).isoformat()
-    return f"""<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Description>Ulanzi D200 deck daemon ({escape(str(REPO))}). Starts at logon; the
-5-minute trigger is a watchdog that starts it again if it ever exits (a run is skipped while it's running).
-Remove with: python -m deck uninstall</Description></RegistrationInfo>
-  <Triggers>
-    <LogonTrigger><Enabled>true</Enabled><UserId>{user}</UserId></LogonTrigger>
-    <TimeTrigger><Enabled>true</Enabled><StartBoundary>{now}</StartBoundary>
-      <Repetition><Interval>PT{WATCHDOG_MINUTES}M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
-    </TimeTrigger>
-  </Triggers>
-  <Principals><Principal id="Author"><UserId>{user}</UserId><LogonType>InteractiveToken</LogonType>
-    <RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>true</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
-    <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <DisallowStartOnRemoteAppSession>false</DisallowStartOnRemoteAppSession>
-    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
-    <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>4</Priority>
-    <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>
-  </Settings>
-  <Actions Context="Author"><Exec><Command>"{escape(str(PYTHONW))}"</Command>
-    <Arguments>"{escape(str(LAUNCHER))}"</Arguments><WorkingDirectory>{escape(str(REPO))}</WorkingDirectory></Exec></Actions>
-</Task>
-"""
-
-
-def install() -> None:
-    import tempfile
-    import winreg
-    if not PYTHONW.is_file():
-        sys.exit(f"{PYTHONW} not found: create the venv first (see README).")
-    with tempfile.TemporaryDirectory() as tmp:
-        xml = Path(tmp) / "task.xml"
-        xml.write_text(_task_xml(), encoding="utf-16")
-        r = subprocess.run(["schtasks", "/Create", "/TN", TASK_NAME, "/XML", str(xml), "/F"],
-                           capture_output=True, text=True)
-    if r.returncode != 0:
-        sys.exit("Couldn't create the logon task: " + (r.stdout + r.stderr).strip())
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_ALL_ACCESS) as k:
+def agent() -> None:
+    """The deployed agent (logon task): the signed-in user's desktop features, for the service."""
+    import threading
+    from . import winutil
+    from .agent import run_agent
+    from .config import load_config
+    _logging(False, STATE_DIR / "agent.log")
+    winutil.dpi_aware()
+    log = logging.getLogger("deck")
+    if winutil.is_admin():
+        log.error("the agent must run as the signed-in user, not as administrator")
+        sys.exit(1)
+    if not winutil.single_instance("UlanziDeckAgent"):
+        log.info("an agent is already running in this session")
+        return
+    while True:   # supervisor, as in run()
         try:
-            winreg.DeleteValue(k, OUR_VALUE)  # the older Run-key autostart; the task replaces it
-        except FileNotFoundError:
-            pass
-        try:
-            value, _ = winreg.QueryValueEx(k, ULANZI_VALUE)
-            STATE_DIR.mkdir(parents=True, exist_ok=True)
-            ULANZI_BACKUP.write_text(value)
-            winreg.DeleteValue(k, ULANZI_VALUE)
-            print("Removed the Ulanzi app from logon autostart (uninstall puts it back).")
-        except FileNotFoundError:
-            pass
-    stop()
-    start()
-    print(f"Installed: task '{TASK_NAME}' starts the deck daemon at logon and restarts it within "
-          f"{WATCHDOG_MINUTES} min if it ever exits. Starting it now.")
+            run_agent(load_config(), threading.Event())
+            return
+        except Exception:
+            log.exception("agent crashed; restarting in 5 s")
+            time.sleep(5)
 
 
-def uninstall() -> None:
-    import winreg
-    subprocess.run(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"], capture_output=True)
-    stop()
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_ALL_ACCESS) as k:
-        try:
-            winreg.DeleteValue(k, OUR_VALUE)
-        except FileNotFoundError:
-            pass
-        if ULANZI_BACKUP.is_file():
-            winreg.SetValueEx(k, ULANZI_VALUE, 0, winreg.REG_SZ, ULANZI_BACKUP.read_text())
-            ULANZI_BACKUP.unlink()
-            print("Gave the Ulanzi app its logon autostart back.")
-    print("Uninstalled the deck daemon.")
+def console_helper() -> None:
+    from .console import run_helper
+    _logging(False, STATE_DIR / "console.log")
+    try:
+        run_helper()
+    except Exception:
+        logging.getLogger("deck").exception("monitor helper failed")
+        sys.exit(1)
+
+
+def service() -> None:
+    _logging(False)
+    from .service import main as service_main
+    service_main()
 
 
 class _NoDeck:
@@ -261,19 +170,33 @@ def preview(out: Path) -> None:
     app = _live_app()
     out.mkdir(parents=True, exist_ok=True)
     gap, key, pad = 18, 196, 24
-    for view in (View("fun"), View("ai"), View("new_thread"), View("print")):
+    for name, view, presence in (("fun", View("fun"), "here"), ("ai", View("ai"), "here"),
+                                 ("new_thread", View("new_thread"), "here"), ("print", View("print"), "here"),
+                                 ("signed-out", View("print"), "signed_out"), ("ai-locked", View("ai"), "locked")):
+        app.sources.put("desktop", presence)
         screen = app.screen(view)
         canvas = Image.new("RGB", (pad * 2 + 5 * key + 4 * gap, pad * 2 + 3 * key + 2 * gap), "#050506")
         for i, k in screen.items():
             img = Image.open(io.BytesIO(render(k.tile)))
             col, row = (3, 2) if i == 13 else (i % 5, i // 5)
             canvas.paste(img, (pad + col * (key + gap), pad + row * (key + gap)))
-        path = out / f"page-{view.page}.png"
+        path = out / f"page-{name}.png"
         canvas.save(path)
         print(path)
 
 
 def status() -> None:
+    import json
+    from .deploy import service_state
+    from .paths import PROGRAM_DIR, SERVICE_STATE_DIR
+    info = PROGRAM_DIR / "app" / "deploy.json"
+    if info.is_file():
+        d = json.loads(info.read_text(encoding="utf-8"))
+        print(f"Deployed: {d['version']} on {d['deployed']} for {d['user']}")
+    else:
+        print("Deployed: no (python -m deck deploy, as administrator)")
+    print("Service:", service_state() or "not installed", f"(log {SERVICE_STATE_DIR / 'deck.log'})")
+    print("Agent log:", STATE_DIR / "agent.log")
     snap = _live_app().snapshot()
     t3 = snap.t3
     print("T3 online:", t3.online)
@@ -296,19 +219,21 @@ def main(argv: list[str] | None = None) -> None:
     cmd = argv[0] if argv else "run"
     if cmd == "run":
         run(console="--quiet" not in argv)
-    elif cmd == "install":
-        install()
-    elif cmd == "uninstall":
-        uninstall()
+    elif cmd == "deploy":
+        from .deploy import deploy
+        deploy()
+    elif cmd == "undeploy":
+        from .deploy import undeploy
+        undeploy()
     elif cmd == "restart":
-        stop()
-        start()
-        print("restarted")
-    elif cmd == "stop":
-        if stop():
-            print("stopped")
-        elif not PID_FILE.is_file():
-            print("wasn't running")
+        from .deploy import restart
+        restart()
+    elif cmd == "service":
+        service()
+    elif cmd == "agent":
+        agent()
+    elif cmd == "console-helper":
+        console_helper()
     elif cmd == "preview":
         preview(Path(argv[1]) if len(argv) > 1 else STATE_DIR / "preview")
     elif cmd == "status":
