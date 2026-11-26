@@ -18,7 +18,7 @@ from deck.winsession import Console
 
 SID = "S-1-5-21-1-2-3-1001"
 SERVICE_ENVS = (Environment("pc", "This PC", "http://127.0.0.1:3773", (), primary=True),)
-HERE = Console(1, "Vinicius", False)
+HERE = Console(1, "alice", False)
 
 
 def wait_for(cond, timeout=3):

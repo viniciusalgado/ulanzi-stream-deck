@@ -66,7 +66,7 @@ def test_helper_follows_the_console_session():
     ddc.follow(Console(2, "", False))                 # login screen
     ddc.follow(Console(2, "", False))                 # same session: nothing new
     ddc.follow(Console(None))                         # between sessions: keep it
-    ddc.follow(Console(1, "Vinicius", False))         # signed in: a new helper on the user's desktop
+    ddc.follow(Console(1, "alice", False))         # signed in: a new helper on the user's desktop
     assert [(s, signed_in) for s, signed_in, _ in spawned] == [(2, False), (1, True)]
     assert not spawned[0][2].alive()
 
