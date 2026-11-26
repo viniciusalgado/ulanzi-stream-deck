@@ -233,6 +233,14 @@ cli = ["wsl.exe", "-d", "Ubuntu", "--exec", "bash", "-c", 'exec "$(ls -d ~/.t3/w
 api = "http://printer.local:7125"                      # Moonraker
 webcam = "http://printer.local/webcam/?action=snapshot"
 
+# Optional LAN relay. Install TinyTuya first and use the switch's verified LAN settings.
+# [printer.power]
+# address = "192.168.1.50"
+# device_id = "your-device-id"
+# local_key = "your-local-key"
+# version = 3.3             # Tuya LAN protocol version
+# dps = 1                   # relay datapoint
+
 # The desk switch (wide key): both monitors over DDC/CI + an ESP32 that presses the UGREEN USB switch's button.
 [kvm]
 esp_config = '%APPDATA%\ugreen-switch\config.json'     # written by scripts/ugreen_provision.py

@@ -215,6 +215,8 @@ def status() -> None:
     if snap.printer is not None:
         p = snap.printer
         print(f"Printer: {p.state} {p.progress:.0%} {p.filename} nozzle {p.nozzle} bed {p.bed}")
+    if snap.printer_power is not None:
+        print("Printer switch:", snap.printer_power.value)
     if snap.kvm is not None:
         print("Desk:", snap.kvm)
     if snap.headphones is not None:

@@ -5,8 +5,17 @@ On when deck.toml has [printer].
     api = "http://printer.local:7125"                        # Moonraker
     webcam = "http://printer.local/webcam/?action=snapshot"  # optional: for printer.camera
 
-Sources: printer (PrinterState; polled faster while a printer widget is on screen), camera (a still on demand).
-Actions: printer.pause, printer.resume, printer.cancel, printer.filament_change, printer.camera
+    [printer.power]              # optional: a Tuya relay on the printer's power supply (pip install tinytuya)
+    address = "192.168.1.50"  device_id = "..."  local_key = "..."  version = 3.3  dps = 1
+
+With [printer.power], three widgets change while the printer is idle (a job keeps them as they are):
+printer.pause_resume becomes Preheat (On + Preheat while off), printer.cancel becomes Power On / hold-2 s
+Power Off, and printer.filament is empty (the preheat key does it). printer.status says Off while the relay is.
+
+Sources: printer (PrinterState; polled faster while a printer widget is on screen), camera (a still on demand),
+         printer_power (PowerState, only with [printer.power]).
+Actions: printer.pause, printer.resume, printer.cancel, printer.filament_change, printer.camera,
+         printer.power_on, printer.power_off
 Widgets: printer.status, printer.camera, printer.filament, printer.pause_resume, printer.cancel.
 Badge: printer (progress while printing, II paused, ! error).
 """
@@ -16,8 +25,9 @@ import time
 from dataclasses import dataclass
 
 from ..keys import Do, Key, duration, offline
-from ..render import AMBER, BLUE, GREEN, RED, AppTile, ArtTile, InfoTile
+from ..render import AMBER, BLUE, GREEN, MUTED, RED, AppTile, ArtTile, Blank, InfoTile
 from ..sources.printer import FILAMENT_CHANGE_TEMP, Printer
+from ..sources.tuya import PowerState
 from ..widgets import Option
 
 NAME = "printer"
@@ -32,8 +42,19 @@ class Still:
 
 
 def setup(s, printer: Printer | None = None) -> None:
-    printer = printer or Printer(s.section["api"], s.section.get("webcam"))
+    if printer is None:
+        power = None
+        if "power" in s.section:
+            from ..sources.tuya import TuyaSwitch
+            power = TuyaSwitch(**s.section["power"])
+        printer = Printer(s.section["api"], s.section.get("webcam"), power=power)
     s.sources.add("printer", printer.poll, every=lambda: 2.0 if s.showing("printer.") else 6.0)
+    if printer.power is not None:
+        s.sources.add("printer_power", printer.power.poll, every=lambda: 2.0 if s.showing("printer.") else 10.0,
+                      initial=PowerState.UNKNOWN)
+        s.actions.add("printer.power_on", printer.power_on, doc="switch the printer on (without heating)")
+        s.actions.add("printer.power_off", printer.power_off,
+                      doc="idle only: heaters off, cool to 50 °C, then switch the printer off")
     s.sources.add("camera", None, initial=None)
     s.lively(lambda snap: snap.camera is not None and snap.camera.until > snap.now)
 
@@ -54,8 +75,15 @@ def setup(s, printer: Printer | None = None) -> None:
     w = s.widgets
 
     def state(ctx):
+        """The printer, when it's on and answering (None: offline, or switched off and not printing)."""
         p = ctx.snap.printer
-        return p if p is not None and p.online else None
+        if p is None or not p.online or (ctx.snap.printer_power is PowerState.OFF and not p.active):
+            return None
+        return p
+
+    def idle_with_switch(ctx) -> bool:
+        p = ctx.snap.printer
+        return ctx.snap.printer_power is not None and not (p is not None and p.active)
 
     @w.widget("printer.status", needs=("printer",),
               options=(Option("open", str, "", "opened on a tap, e.g. the Mainsail URL"),),
@@ -63,6 +91,8 @@ def setup(s, printer: Printer | None = None) -> None:
     def status(ctx):
         p = state(ctx)
         if p is None:
+            if ctx.snap.printer_power is PowerState.OFF:
+                return Key(InfoTile("Printer", "Off", (), accent=MUTED, icon="lucide:unplug"))
             return offline("Printer")
         temps = f"{p.nozzle[0]:.0f}°/{p.nozzle[1]:.0f}° · bed {p.bed[0]:.0f}°"
         name = p.filename.rsplit("/", 1)[-1].removesuffix(".gcode")
@@ -76,8 +106,10 @@ def setup(s, printer: Printer | None = None) -> None:
         elif p.state == "complete":
             tile = InfoTile("Done", "100%", (name, f"took {duration(p.elapsed)}"), progress=1.0, accent=GREEN,
                             icon="lucide:circle-check")
-        elif p.state in ("error", "shutdown"):
+        elif p.state in ("error", "shutdown", "unknown"):
             tile = InfoTile("Error", "", (p.message[:60] or p.state, temps), accent=RED, icon="lucide:triangle-alert")
+        elif p.state == "startup":
+            tile = InfoTile("Printer", "Starting", (), accent=AMBER, icon="lucide:printer")
         else:
             heating = p.nozzle[1] > 0 or p.bed[1] > 0
             tile = InfoTile("Heating" if heating else "Ready", f"{p.nozzle[0]:.0f}°",
@@ -99,13 +131,23 @@ def setup(s, printer: Printer | None = None) -> None:
 
     @w.widget("printer.filament", needs=("printer",), doc=f"heat to {FILAMENT_CHANGE_TEMP} °C while idle")
     def filament(ctx):
+        if ctx.snap.printer_power is not None:
+            return Key(Blank())                  # with a switch, the preheat key (pause_resume) does this
         p = ctx.snap.printer
         can = p is not None and p.can_change_filament
         return Key(AppTile("lucide:flame", "Filament Change", sub=f"{FILAMENT_CHANGE_TEMP} °C", color=ctx.color,
                            dim=not can), Do("printer.filament_change") if can else None)
 
-    @w.widget("printer.pause_resume", needs=("printer",), doc="pause while printing, resume while paused")
+    @w.widget("printer.pause_resume", needs=("printer",),
+              doc="pause while printing, resume while paused; with a switch, preheat while idle")
     def pause_resume(ctx):
+        if idle_with_switch(ctx):
+            power, p = ctx.snap.printer_power, ctx.snap.printer
+            can_change = p is not None and p.can_change_filament
+            can = power is PowerState.OFF or (power is PowerState.ON and can_change)
+            return Key(AppTile("lucide:flame", "On + Preheat" if power is PowerState.OFF else "Preheat",
+                               sub=f"{FILAMENT_CHANGE_TEMP} °C", color=ctx.color, dim=not can),
+                       Do("printer.filament_change") if can else None)
         p = state(ctx)
         if p is not None and p.state == "printing":
             return Key(AppTile("lucide:pause", "Pause", color=AMBER), Do("printer.pause"))
@@ -115,8 +157,15 @@ def setup(s, printer: Printer | None = None) -> None:
 
     @w.widget("printer.cancel", needs=("printer",),
               options=(Option("hold", float, 2.0, "seconds to hold before it cancels"),),
-              doc="cancel the print, only after a hold")
+              doc="cancel the print, only after a hold; with a switch, power on / off while idle")
     def cancel(ctx):
+        if idle_with_switch(ctx):
+            power, p = ctx.snap.printer_power, ctx.snap.printer
+            if power is PowerState.OFF:
+                return Key(AppTile("lucide:printer", "Power On", color=GREEN), Do("printer.power_on"))
+            can = power is PowerState.ON and p is not None and p.can_change_filament
+            return Key(AppTile("lucide:unplug", "Power Off", sub="hold 2 s", color=RED, dim=not can),
+                       Do("printer.power_off") if can else None, hold=2.0, long_label="Power Off")
         p = ctx.snap.printer
         if p is None or not p.active:
             return Key(AppTile("lucide:circle-stop", "Cancel", dim=True))

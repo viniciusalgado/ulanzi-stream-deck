@@ -9,6 +9,7 @@ from deck.sources.kvm import KvmState
 from deck.sources.media import MediaState, Playlist
 from deck.sources.printer import PrinterState
 from deck.sources.t3 import Environment, Project, T3State, Thread
+from deck.sources.tuya import PowerState
 
 PC = Environment("pc", "This PC", "u", ("t3",), primary=True)
 WSL = Environment("wsl", "WSL", "u2", ("t3",))
@@ -54,6 +55,15 @@ SNAPS = {
     "dictating": dict(dictating=True),
     "new_draft": dict(new_draft=True),
     "dictation_sending": dict(dictating=False, dictation_sending=True),
+    "klipper_startup": dict(printer=PrinterState(online=True, state="startup")),
+    "klipper_unknown": dict(printer=PrinterState(online=True, state="unknown")),
+    "power_off": dict(printer=PrinterState(), printer_power=PowerState.OFF),
+    "power_off_shutdown": dict(printer=PrinterState(online=True, state="shutdown"), printer_power=PowerState.OFF),
+    "power_on_offline": dict(printer=PrinterState(), printer_power=PowerState.ON),
+    "power_unknown_idle": dict(printer_power=PowerState.UNKNOWN),
+    "power_on_idle": dict(printer_power=PowerState.ON),
+    "power_on_printing": dict(printer=PrinterState(online=True, state="printing", progress=.4), printer_power=PowerState.ON),
+    "power_on_paused": dict(printer=PrinterState(online=True, state="paused", progress=.7), printer_power=PowerState.ON),
 }
 
 VIEWS = {   # name: (page, offset, env)
@@ -80,4 +90,5 @@ OLD_ACTIONS = {
     "media.play_playlist": "media.play_playlist",
     "printer.pause": "printer.pause", "printer.resume": "printer.resume", "printer.cancel": "printer.cancel",
     "printer.filament_change": "printer.filament_change", "settle_thread": "t3.settle",
+    "printer.power_on": "printer.power_on", "printer.power_off": "printer.power_off",
 }
