@@ -53,6 +53,7 @@ SNAPS = {
     "kvm_note": dict(kvm_message="USB didn't follow"),
     "dictating": dict(dictating=True),
     "new_draft": dict(new_draft=True),
+    "dictation_sending": dict(dictating=False, dictation_sending=True),
 }
 
 VIEWS = {   # name: (page, offset, env)
@@ -78,5 +79,5 @@ OLD_ACTIONS = {
     "media.prev": "media.prev", "media.next": "media.next", "media.toggle": "media.toggle",
     "media.play_playlist": "media.play_playlist",
     "printer.pause": "printer.pause", "printer.resume": "printer.resume", "printer.cancel": "printer.cancel",
-    "printer.filament_change": "printer.filament_change",
+    "printer.filament_change": "printer.filament_change", "settle_thread": "t3.settle",
 }
