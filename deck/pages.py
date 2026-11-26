@@ -10,7 +10,9 @@ Bottom row on every page: 10-12 switch pages (Fun / AI / 3D Print), 13 moves the
 
   Fun:      0 Dota 2   1 Discord   2-4 playlists        5 headphones (tap: back to this PC, hold: hard reconnect)
             6 YouTube  7 prev  8 play/pause (now playing)  9 next
-  AI:       0 T3 Code  1 Dictate   2 New thread         3-9 live threads (newest first; 9 pages when there are more)
+  AI:       0 T3 Code  1 Dictate (tap: start; tap again: stop and send)  2 New thread
+            3-9 live threads (newest first; 9 pages when there are more; tap: open, hold 3 s when done or
+            failed: settle)
   New:      0 Back     1 Environment                    2-9 projects of that environment, most recently used first
   3D Print: 0 New thread (3d project)  1-3 its threads  4 camera (tap: snapshot, hold: stream)
             5 print status  6 filament change  7 pause/resume  8 cancel (hold)  9 Cura
@@ -27,6 +29,7 @@ from .sources.printer import FILAMENT_CHANGE_TEMP
 PAGE_COLORS = {"fun": "#f472b6", "ai": "#a78bfa", "print": "#fb923c"}
 NAV = [("fun", "lucide:gamepad-2", "Fun"), ("ai", "lucide:bot", "AI"), ("print", "lucide:printer", "3D Print")]
 WIDE = 13
+SETTLE_HOLD_S = 3.0
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,7 @@ class Do:
     fn: Callable
     args: tuple = ()
     then: View | None = None  # navigate here as soon as the key is pressed
+    quiet: bool = False       # no "ok" flash when it worked (the key's content changes instead)
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,8 @@ class Key:
     action: Go | Do | None = None
     hold: float = 0.0          # seconds the key must be held before the action runs
     long: Do | None = None     # optional second action for a long press (then `action` runs on a short tap)
+    long_s: float = 0.0        # how long that long press is (0: deck.presses' default)
+    long_label: str = ""       # set: holding shows a filling ring with this label until `long` fires
 
 
 @dataclass(frozen=True)
@@ -69,6 +75,7 @@ class Snapshot:
     kvm_message: str = ""
     kvm_message_error: bool = False   # red when the monitors failed; amber for notes (e.g. USB didn't follow)
     dictating: bool = False
+    dictation_sending: bool = False   # stopped; waiting for T3 to transcribe and send it
     new_draft: bool = False    # a New thread draft was just opened: Dictate will type into it
     headphones: object = None  # sources.headphones.HeadphoneState
     now: float = 0.0
@@ -147,9 +154,12 @@ def _nav_badge(page: str, snap: Snapshot) -> tuple[str | None, str]:
 def _thread_key(t, snap: Snapshot, svc) -> Key:
     status = {"working": f"Working {age(snap.now - t.since)}", "attention": "Needs you", "error": "Failed",
               "ready": f"Ready · {age(snap.now - t.since)}"}[t.state]
-    return Key(ThreadTile(t.title, t.project.title, t.project.icon, t.state, status,
-                          phase=int(snap.now) if t.state == "working" else 0),
-               Do(svc.t3.open_thread, (t,)))
+    tile = ThreadTile(t.title, t.project.title, t.project.icon, t.state, status,
+                      phase=int(snap.now) if t.state == "working" else 0)
+    if t.state in ("ready", "error"):   # done or failed: holding settles it (it then leaves the deck)
+        return Key(tile, Do(svc.t3.open_thread, (t,)), long=Do(svc.settle_thread, (t,), quiet=True),
+                   long_s=SETTLE_HOLD_S, long_label="Settle")
+    return Key(tile, Do(svc.t3.open_thread, (t,)))
 
 
 def _paged(items: list, slots: list[int], view: View, make: Callable, more_view: Callable[[int], View]) -> dict:
@@ -235,8 +245,10 @@ def _ai(view: View, snap: Snapshot, svc, cfg: dict) -> dict[int, Key]:
 
 
 def _dictate_tile(snap: Snapshot) -> AppTile:
+    if snap.dictation_sending:
+        return AppTile("lucide:mic", "Dictate", sub="sending…", color=BLUE, accent=BLUE)
     if snap.dictating:
-        return AppTile("lucide:mic", "Dictate", sub="listening… tap to stop", color=RED, accent=RED)
+        return AppTile("lucide:mic", "Dictate", sub="listening… tap to send", color=RED, accent=RED)
     if snap.new_draft:
         return AppTile("lucide:mic", "Dictate", sub="into new thread", color=PAGE_COLORS["ai"],
                        accent=PAGE_COLORS["ai"])

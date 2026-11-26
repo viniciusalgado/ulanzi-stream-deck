@@ -96,9 +96,12 @@ class SwitchTile:
 
 @dataclass(frozen=True)
 class Flashed:
-    """Feedback drawn over any tile while its action runs (busy) and just after (ok / fail)."""
+    """Feedback drawn over any tile while its action runs (busy) and just after (ok / fail), or while a long
+    press fills up toward its action (charge: a ring at `progress` with `label`)."""
     tile: object
-    kind: str  # busy | ok | fail | hold
+    kind: str  # busy | ok | fail | hold | charge
+    progress: float = 0.0
+    label: str = ""
 
 
 @functools.lru_cache(maxsize=256)
@@ -115,6 +118,8 @@ def render(tile) -> bytes:
 
 def _draw(tile) -> Image.Image:
     if isinstance(tile, Flashed):
+        if tile.kind == "charge":
+            return _charge(_draw(tile.tile), tile.progress, tile.label)
         return _flash(_draw(tile.tile), tile.kind)
     fn = {Blank: _blank, AppTile: _app, ArtTile: _art, ThreadTile: _thread, InfoTile: _info,
           SwitchTile: _switch}[type(tile)]
@@ -358,4 +363,23 @@ def _flash(img: Image.Image, kind: str) -> Image.Image:
         d.line((cx - 8, cy + 8, cx + 8, cy - 8), fill="#111318", width=5)
     else:  # hold
         d.text((cx, cy), "…", font=fonts.get("bold", 26), fill="#111318", anchor="mm")
+    return img
+
+
+def _charge(img: Image.Image, progress: float, label: str) -> Image.Image:
+    """The tile dimmed under a ring that fills clockwise from the top; full = it fires on this frame."""
+    p = max(0.0, min(1.0, progress))
+    img = Image.blend(img.convert("RGB"), Image.new("RGB", img.size, "#0b0c0f"), 0.72)
+    d = ImageDraw.Draw(img)
+    w, h = img.size
+    cx, cy, r = w / 2, h / 2 - 16, 54
+    box = (cx - r, cy - r, cx + r, cy + r)
+    d.arc(box, 0, 360, fill=FAINT, width=12)
+    if p > 0:
+        d.arc(box, -90, -90 + 360 * p, fill=GREEN, width=12)
+    done = p >= 1.0
+    d.line((cx - 20, cy + 1, cx - 6, cy + 15, cx + 22, cy - 13), fill=GREEN if done else FG, width=8,
+           joint="curve")
+    d.text((cx, h - 30), label, font=fonts.get("bold", 24), fill=GREEN if done else FG, anchor="mm")
+    d.rounded_rectangle((1, 1, w - 2, h - 2), 8, outline=GREEN if done else FAINT, width=4)
     return img

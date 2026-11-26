@@ -25,7 +25,7 @@ def svc():
               media=NS(prev=lambda: None, next=lambda: None, toggle=lambda: None, play_playlist=lambda u: None),
               printer=NS(pause=lambda: None, resume=lambda: None, cancel=lambda: None, filament_change=lambda: None),
               launch=lambda t: None, toggle_kvm=lambda: None,
-              camera_snapshot=lambda: None, toggle_dictation=lambda: None,
+              camera_snapshot=lambda: None, toggle_dictation=lambda: None, settle_thread=lambda t: None,
               new_thread=lambda p: None, reclaim_headphones=lambda: None, reset_headphones=lambda: None)
 
 
@@ -172,9 +172,28 @@ def test_pages_bind_only_what_the_real_app_has():
                         bound.add(action.fn.__qualname__)
     fake = svc()
     expected = {f"{type(owner).__qualname__}.{name}"
-                for owner, names in ((app, ["launch", "toggle_kvm", "camera_snapshot", "toggle_dictation",
+                for owner, names in ((app, ["launch", "toggle_kvm", "camera_snapshot", "toggle_dictation", "settle_thread",
                                             "new_thread", "reclaim_headphones", "reset_headphones"]),
                                      (app.t3, vars(fake.t3)), (app.media, vars(fake.media)),
                                      (app.printer, vars(fake.printer)))
                 for name in names}
     assert bound == expected
+
+
+def test_done_or_failed_thread_keys_settle_on_a_3_s_hold_and_open_on_a_tap():
+    s = svc()
+    for state in ("ready", "error"):
+        t = threads(1, state=state)
+        k = pages.build(View("ai"), snap(t3=T3State({"pc": True}, (PX,), t)), s, CFG)[3]
+        assert k.action == Do(s.t3.open_thread, (t[0],))
+        assert k.long == Do(s.settle_thread, (t[0],), quiet=True)
+        assert k.long_s == 3.0 and k.long_label == "Settle"
+    for state in ("working", "attention"):     # still going, or waiting on you: nothing to settle
+        k = pages.build(View("ai"), snap(t3=T3State({"pc": True}, (PX,), threads(1, state=state))), s, CFG)[3]
+        assert k.long is None and k.action.fn == s.t3.open_thread
+
+
+def test_dictate_says_it_sends_and_then_that_it_is_sending():
+    s = svc()
+    assert pages.build(View("ai"), snap(dictating=True), s, CFG)[1].tile.sub == "listening… tap to send"
+    assert pages.build(View("ai"), snap(dictating=True, dictation_sending=True), s, CFG)[1].tile.sub == "sending…"

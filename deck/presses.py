@@ -7,14 +7,17 @@ time they happened and carries out the effects it returns.
     presses.press(index, key, view, now)      -> [Run(...)] | [Navigate(...)] | []
     presses.release(index, now)               -> same
     presses.tick(now)                         -> effects of holds that reached their time; call by next_deadline()
-    presses.completed(index, view, ok, now)   # a Run finished: ok / fail flash for FLASH_S
-    presses.overlay(view, now)                -> {index: "hold" | "busy" | "ok" | "fail"} to draw on that view
-    presses.next_deadline()                   -> monotonic time tick() or overlay() next changes, or None
+    presses.completed(index, view, ok, now)   # a Run finished: ok / fail flash for FLASH_S (no ok if quiet)
+    presses.overlay(view, now)                -> {index: "hold" | "busy" | "ok" | "fail" | Charge} for that view
+    presses.next_deadline(now)                -> monotonic time tick() or overlay() next changes, or None
 
 Rules:
   - a plain key acts on press;
   - a `hold` key acts only after being held that long (it shows "hold" meanwhile); letting go early cancels it;
-  - a key with `long` runs `action` on a short tap (on release) and `long` when held for long_press_s;
+  - a key with `long` runs `action` on a short tap (on release) and `long` when held for its long_s (or
+    long_press_s); with a `long_label` it shows a Charge filling up while held, from CHARGE_SHOW_S on, in
+    CHARGE_STEPS steps (each step is a redraw, and the deck's firmware dislikes fast updates);
+  - a Do with `quiet` shows no "ok" flash when it worked (e.g. settling: the thread leaves the key anyway);
   - a Go navigates and clears every flash; a Do shows "busy" on its key until completed(), and its `then`
     navigates right away. Flashes belong to the view they were made on and only show there.
 """
@@ -26,6 +29,15 @@ from .pages import Do, Go, Key, View
 
 FLASH_S = 1.2
 LONG_PRESS_S = 1.5
+CHARGE_SHOW_S = 0.3    # a tap never shows the ring
+CHARGE_STEPS = 10
+
+
+@dataclass(frozen=True)
+class Charge:
+    """A long press on its way: how far along (0..1, in steps) and what it will do."""
+    progress: float
+    label: str
 
 
 @dataclass(frozen=True)
@@ -52,6 +64,7 @@ class _Hold:
     key: Key
     view: View
     at: float         # when it fires
+    start: float = 0.0
 
 
 class Presses:
@@ -67,7 +80,7 @@ class Presses:
         if key.hold > 0 or key.long is not None:
             if key.hold > 0:
                 self._flash[index] = _Flash("hold", 0.0, view)
-            self._holds[index] = _Hold(key, view, now + (key.hold or self._long_press_s))
+            self._holds[index] = _Hold(key, view, now + (key.hold or key.long_s or self._long_press_s), now)
             return []
         return self._fire(index, key.action, view)
 
@@ -91,17 +104,38 @@ class Presses:
                 del self._flash[index]
         return effects
 
-    def completed(self, index: int, view: View, ok: bool, now: float) -> None:
+    def completed(self, index: int, view: View, ok: bool, now: float, quiet: bool = False) -> None:
+        if ok and quiet:
+            f = self._flash.get(index)
+            if f is not None and f.kind == "busy" and f.view == view:
+                del self._flash[index]
+            return
         self._flash[index] = _Flash("ok" if ok else "fail", now + self._flash_s, view)
 
-    def overlay(self, view: View, now: float) -> dict[int, str]:
-        return {i: f.kind for i, f in self._flash.items()
-                if f.view == view and (f.kind in ("busy", "hold") or f.until > now)}
+    def overlay(self, view: View, now: float) -> dict[int, object]:
+        shown: dict[int, object] = {i: f.kind for i, f in self._flash.items()
+                                    if f.view == view and (f.kind in ("busy", "hold") or f.until > now)}
+        for i, h in self._holds.items():
+            if h.view == view and self._charging(h, now):
+                step = int((now - h.start) / (h.at - h.start) * CHARGE_STEPS + 1e-9)
+                shown[i] = Charge(min(step, CHARGE_STEPS) / CHARGE_STEPS, h.key.long_label)
+        return shown
 
-    def next_deadline(self) -> float | None:
+    def next_deadline(self, now: float | None = None) -> float | None:
+        """With `now`, also the next step of a filling ring (each one needs a redraw)."""
         times = [h.at for h in self._holds.values()]
         times += [f.until for f in self._flash.values() if f.kind in ("ok", "fail")]
+        if now is not None:
+            for h in self._holds.values():
+                if h.key.long_label and h.key.long is not None:
+                    span = (h.at - h.start) / CHARGE_STEPS
+                    steps = [h.start + CHARGE_SHOW_S] + [h.start + k * span for k in range(1, CHARGE_STEPS)]
+                    times += [t for t in sorted(steps) if t > now][:1]
         return min(times, default=None)
+
+    @staticmethod
+    def _charging(h: _Hold, now: float) -> bool:
+        return bool(h.key.long_label) and h.key.long is not None and now - h.start >= CHARGE_SHOW_S
 
     def _fire(self, index: int, action, view: View) -> list:
         if action is None:

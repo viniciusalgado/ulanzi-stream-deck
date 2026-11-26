@@ -100,8 +100,8 @@ class Desktop:
         self.t3.new_thread(project)
 
     @requires("input")
-    def dictate(self) -> None:
-        self.t3.dictate()
+    def dictate(self, send: bool = False) -> None:
+        self.t3.dictate(send=send)
 
     @requires("input")
     def play_playlist(self, uri: str) -> None:

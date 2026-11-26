@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import pages, winutil
 from .device import Deck
 from .pages import Go, Key, Snapshot, View
-from .presses import Navigate, Presses, Run
+from .presses import Charge, Navigate, Presses, Run
 from .render import Flashed, render
 from .sources.headphones import HeadphoneState, Headphones
 from .sources.kvm import Kvm
@@ -54,6 +54,7 @@ class App:
         self._kvm_busy = False
         self._kvm_message = ("", "info", 0.0)     # text, level, shown until (time.time)
         self._dictating_until = 0.0
+        self._dictation_sending = False
         self._draft_until = 0.0
         self._camera = (None, 0.0)                # jpeg, shown until (time.time)
         self._cond = threading.Condition()
@@ -114,8 +115,32 @@ class App:
         self._kvm_message = (text, level, time.time() + 10)
 
     def toggle_dictation(self) -> None:
-        self.t3.dictate()
-        self._dictating_until = 0.0 if self._dictating_until > time.time() else time.time() + 120
+        """First tap starts T3's dictation; the next one stops it and sends the prompt (the key stays busy until
+        the message has reached the server, and flashes red if it never does)."""
+        if self._dictating_until <= time.time():
+            self.t3.dictate()
+            self._dictating_until = time.time() + 120
+            return
+        since = time.time() - 1.0          # a little slack for the server's clock
+        self.t3.dictate(send=True)
+        self._dictating_until = 0.0
+        self._draft_until = 0.0            # the new draft (if any) is being sent now
+        self._dictation_sending = True
+        self._mark_dirty()
+        try:
+            self.t3.wait_for_sent(since)
+        finally:
+            self._dictation_sending = False
+            self.sources.refresh("t3")
+            self._mark_dirty()
+
+    def settle_thread(self, thread) -> None:
+        """Settle a done or failed thread; it leaves the deck on the refresh right after."""
+        try:
+            self.t3.settle(thread)
+        finally:
+            self.sources.refresh("t3")
+            self._mark_dirty()
 
     def new_thread(self, project) -> None:
         """Open a new draft in T3 Code; the next Dictate press types into it (T3 dictates into the open thread)."""
@@ -176,7 +201,8 @@ class App:
         return Snapshot(**self.sources.values(), camera=jpeg if now <= camera_until else None,
                         kvm_busy=self._kvm_busy, kvm_message=text if shown else "",
                         kvm_message_error=shown and level == "error",
-                        dictating=self._dictating_until > now, new_draft=self._draft_until > now, now=now)
+                        dictating=self._dictating_until > now, dictation_sending=self._dictation_sending,
+                        new_draft=self._draft_until > now, now=now)
 
     def screen(self, view: View | None = None) -> dict[int, Key]:
         view = view or self.view
@@ -189,7 +215,7 @@ class App:
         screen = self.screen(view)
         with self._cond:
             overlay = self._presses.overlay(view, time.monotonic())
-        tiles = {i: Flashed(key.tile, overlay[i]) if i in overlay else key.tile for i, key in screen.items()}
+        tiles = {i: _flashed(key.tile, overlay[i]) if i in overlay else key.tile for i, key in screen.items()}
         with self._cond:
             if self.view == view:
                 self._screen = screen
@@ -203,7 +229,7 @@ class App:
         lively = (animating or self._presses.overlay(self.view, now) or self._kvm_busy
                   or self._camera[1] > time.time())
         wait = 1.0 if lively else 2.0
-        due = self._presses.next_deadline()
+        due = self._presses.next_deadline(now)
         return wait if due is None else max(0.0, min(wait, due - now + 0.01))
 
     def _mark_dirty(self) -> None:
@@ -251,9 +277,15 @@ class App:
         if err is not None:
             log.warning("action on key %d failed: %s", run.index, err)
         with self._cond:
-            self._presses.completed(run.index, run.view, err is None, time.monotonic())
+            self._presses.completed(run.index, run.view, err is None, time.monotonic(), quiet=run.action.quiet)
             self._dirty = True
             self._cond.notify()
+
+
+def _flashed(tile, mark) -> Flashed:
+    if isinstance(mark, Charge):
+        return Flashed(tile, "charge", progress=mark.progress, label=mark.label)
+    return Flashed(tile, mark)
 
 
 def _short(text: str, n: int = 34) -> str:
