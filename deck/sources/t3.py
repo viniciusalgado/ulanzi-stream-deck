@@ -3,13 +3,19 @@
 Interface:
     t3 = T3(environments)           # from deck.toml [[t3.environments]]
     state = t3.poll()               # T3State: environments, projects, visible threads (never raises)
-    t3.open_thread(thread) / t3.new_thread(project) / t3.open_app() / t3.dictate()
+    t3.open_thread(thread) / t3.new_thread(project) / t3.open_app()
+    t3.dictate() / t3.dictate(send=True) + t3.wait_for_sent(since)   # stop dictating and send what was said
+    t3.settle(thread)
 
 Reads come from each environment's local HTTP API (`GET /api/orchestration/shell`, one ~40 ms call that
 returns every thread with its run status). Each environment gets its own read-only bearer token, issued once
 with that environment's `t3 auth session issue` and re-issued automatically when it expires.
-Writes go through the desktop app the user sees: `t3code://threads/...` deep links to open a thread and
-`t3 app <folder>` to start a new thread draft in a project, so nothing runs without the user pressing Send.
+Most writes go through the desktop app the user sees: `t3code://threads/...` deep links to open a thread,
+`t3 app <folder>` to start a new thread draft in a project, and T3's own shortcuts for dictation and Send.
+Sending after dictation relies on T3 holding a send pressed while it's still transcribing ("Sending when
+ready"), so the deck presses Send right after stopping and then watches the server for the new message.
+Settling is the one write that goes to the server directly: `thread.settle` over the WebSocket RPC (see
+deck.wsrpc), with a second token that has `orchestration:operate` (the read token stays read-only).
 
 A thread is shown when it is a top-level thread that isn't settled, archived or snoozed.
 """
@@ -23,11 +29,12 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .. import icons, winutil
+from .. import icons, winutil, wsrpc
 from ..paths import STATE_DIR
 
 log = logging.getLogger(__name__)
@@ -35,8 +42,15 @@ _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 PROTOCOL_HEADER = "x-t3-orchestration-protocol"
 WORKING_STATUSES = {"running", "starting", "queued", "pending", "waking"}
 ERROR_STATUSES = {"failed", "error", "interrupted"}
-TOKEN_ARGS = ["auth", "session", "issue", "--scope", "orchestration:read", "--ttl", "365d",
-              "--label", "Ulanzi deck (read-only)", "--token-only"]
+TOKEN_ARGS = {
+    "read": ["auth", "session", "issue", "--scope", "orchestration:read", "--ttl", "365d",
+             "--label", "Ulanzi deck (read-only)", "--token-only"],
+    "operate": ["auth", "session", "issue", "--scope", "orchestration:operate", "--ttl", "365d",
+                "--label", "Ulanzi deck (settle threads)", "--token-only"],
+}
+TOKEN_FILES = {"read": "t3-token-{}.txt", "operate": "t3-operate-token-{}.txt"}
+CLIENT_SETTINGS = Path.home() / ".t3" / "userdata" / "client-settings.json"   # T3 Code's own UI settings
+SEND_WAIT_S = 60.0    # after stopping dictation: how long transcription + the held send may take
 T3_EXE = os.path.expandvars(r"%LOCALAPPDATA%\Programs\t3code\T3 Code (Beta).exe")   # its default install
 
 
@@ -69,6 +83,7 @@ class Thread:
     state: str          # working | attention | error | ready
     since: float        # epoch seconds the current state started (for "3m ago")
     created: float
+    run_id: str | None = None   # latest run: settling is refused if a newer run started since the deck drew it
 
 
 @dataclass(frozen=True)
@@ -141,17 +156,20 @@ def parse_shell(shell: dict, env: Environment, env_id: str, now: float | None = 
             continue
         state, since = thread_state(t)
         threads.append(Thread(id=t["id"], env_id=env_id, project=proj, title=t.get("title") or "New thread",
-                              state=state, since=since, created=_ts(t.get("createdAt"))))
+                              state=state, since=since, created=_ts(t.get("createdAt")),
+                              run_id=t.get("latestRunId")))
     threads.sort(key=lambda th: th.created, reverse=True)   # newest first; order doesn't jump on status changes
     return sorted(projects.values(), key=lambda p: p.last_active, reverse=True), threads
 
 
 class T3:
-    """`runner`, `launcher`, `focus`, `in_front`, `keys` and `sleep` default to the real subprocess / winutil / time
-    calls; tests pass fakes. Keys are only ever pressed while T3 Code is checked to be the window in front."""
+    """`runner`, `launcher`, `focus`, `in_front`, `keys`, `sleep`, `rpc` and `settings` default to the real
+    subprocess / winutil / time / wsrpc calls and T3's settings file; tests pass fakes. Keys are only ever
+    pressed while T3 Code is checked to be the window in front."""
 
     def __init__(self, environments: list[Environment], *, runner=subprocess.run, launcher=None,
-                 focus=None, in_front=None, keys=None, sleep=time.sleep):
+                 focus=None, in_front=None, keys=None, sleep=time.sleep, rpc=wsrpc.call,
+                 settings=CLIENT_SETTINGS):
         self.envs = environments
         self._run = runner
         self._launch = launcher or winutil.launch
@@ -159,6 +177,8 @@ class T3:
         self._in_front = in_front or winutil.is_foreground
         self._keys = keys or winutil.hotkey
         self._sleep = sleep
+        self._rpc = rpc
+        self._settings = Path(settings)
         self._tokens: dict[str, str] = {}
         self._env_ids: dict[str, str] = {}
         self._retry_at: dict[str, float] = {}
@@ -212,24 +232,38 @@ class T3:
                 raise
         raise RuntimeError("unreachable")
 
-    def _token(self, env: Environment, refresh: bool = False) -> str:
+    def _token(self, env: Environment, refresh: bool = False, kind: str = "read") -> str:
         with self._lock:
-            path = STATE_DIR / f"t3-token-{env.key}.txt"
+            path = STATE_DIR / TOKEN_FILES[kind].format(env.key)
+            cache = f"{kind}:{env.key}"
             if not refresh:
-                if env.key in self._tokens:
-                    return self._tokens[env.key]
+                if cache in self._tokens:
+                    return self._tokens[cache]
                 if path.is_file():
-                    self._tokens[env.key] = path.read_text().strip()
-                    return self._tokens[env.key]
-            out = self._run([*env.cli, *TOKEN_ARGS], capture_output=True, text=True, timeout=60,
+                    self._tokens[cache] = path.read_text().strip()
+                    return self._tokens[cache]
+            out = self._run([*env.cli, *TOKEN_ARGS[kind]], capture_output=True, text=True, timeout=60,
                             creationflags=0x08000000)
             token = out.stdout.strip().splitlines()[-1].strip() if out.stdout.strip() else ""
             if out.returncode != 0 or len(token) < 20:
                 raise RuntimeError(f"t3 token for {env.key} failed: {out.stderr.strip()[:200]}")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(token)
-            self._tokens[env.key] = token
+            self._tokens[cache] = token
             return token
+
+    def latest_user_message(self) -> float:
+        """Newest moment any thread got a message from the user, over every reachable environment."""
+        newest = 0.0
+        for env in self.envs:
+            try:
+                shell = self._get(env, "/api/orchestration/shell?omitIdleSubagents=true&omitOlderSettled=true")
+            except Exception as e:
+                log.debug("t3 %s unreachable: %s", env.key, e)
+                continue
+            for t in shell.get("threads", []):
+                newest = max(newest, _ts(t.get("latestUserAuthoredMessageAt")), _ts(t.get("latestUserMessageAt")))
+        return newest
 
     # ----- actions (run on a worker thread; raise on failure so the key flashes red) -----
 
@@ -262,14 +296,58 @@ class T3:
         if not self._focus(T3_EXE):
             self._launch(T3_EXE)
 
-    def dictate(self) -> None:
+    def dictate(self, send: bool = False) -> None:
         """Toggle T3 Code's composer dictation (its `composer.dictation` shortcut, Ctrl+Shift+D).
 
         T3 dictates into the thread that is open, so right after new_thread() it types into the new draft.
+        With send=True (stopping), it then presses T3's Send key: T3 holds that send until the transcript is
+        in the composer and sends it then. Call wait_for_sent() to know it really went.
         """
         self._bring_forward()
         self._sleep(0.15)
         self._send("ctrl+shift+d")
+        if send:
+            self._sleep(0.4)              # let T3 leave "recording" first: a send now waits for the transcript
+            self._send(self._send_key())
+
+    def wait_for_sent(self, since: float, timeout: float = SEND_WAIT_S) -> None:
+        """Block until some thread has a user message newer than `since` (epoch s); raise if none comes."""
+        deadline = time.monotonic() + timeout
+        while True:
+            if self.latest_user_message() > since:
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"T3 didn't send the dictation within {timeout:.0f} s")
+            self._sleep(0.5)
+
+    def _send_key(self) -> str:
+        """T3's Send shortcut, from its settings: "enter" (default), or Ctrl+Enter in the modifier modes."""
+        try:
+            mode = json.loads(self._settings.read_text(encoding="utf-8")).get("sendShortcut", "enter")
+        except (OSError, ValueError, AttributeError):
+            mode = "enter"
+        return "enter" if mode == "enter" else "ctrl+enter"
+
+    def settle(self, thread: Thread) -> None:
+        """Settle a thread on its server (what T3's "Settle" does), by id: never whatever happens to be open."""
+        env = next(e for e in self.envs if e.key == thread.project.env)
+        command = {"type": "thread.settle", "commandId": str(uuid.uuid4()), "threadId": thread.id}
+        if thread.run_id:
+            command["expectedLatestRunId"] = thread.run_id
+        self._operate(env, "orchestration.dispatchCommand", command)
+        log.info("settled thread %s (%s)", thread.id, thread.title)
+
+    def _operate(self, env: Environment, tag: str, payload: dict):
+        for attempt in (1, 2):
+            token = self._token(env, refresh=attempt == 2, kind="operate")
+            try:
+                return self._rpc(env.url, token, tag, payload)
+            except wsrpc.RpcAuthError:
+                if attempt == 1:
+                    log.info("t3 %s operate token rejected; issuing a new one", env.key)
+                    continue
+                raise
+        raise RuntimeError("unreachable")
 
     def _bring_forward(self) -> None:
         if not self._focus(T3_EXE):   # raises when it runs but Windows won't bring it forward

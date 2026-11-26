@@ -7,7 +7,7 @@
     sources.add("t3", None, initial=T3State())  # pushed, not polled: changes only through put()
     sources.put("t3", value)                    # store a value that came from elsewhere (notifies if it changed)
     sources.start()
-    sources.values()          # {"t3": T3State(...), ...}: one entry per source, names = pages.Snapshot fields
+    sources.values()          # {"t3": T3State(...), ...}: one entry per source, names = Snapshot attributes (deck.keys)
     sources.refresh("kvm")    # poll one now (after an action changed it), store it, notify
     sources.poll_all()        # every source once, on this thread; tasks don't run (preview / status)
     sources.stop()

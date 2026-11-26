@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .paths import CONFIG_FILE, EXAMPLE_CONFIG
 
-REQUIRED = ("deck", "pages", "t3", "printer", "kvm")
+REQUIRED = ("deck", "pages")   # plugins check their own sections
 
 
 def load_config(path: Path = CONFIG_FILE) -> dict:
