@@ -13,8 +13,8 @@ from deck.sources.t3 import Environment, T3State
 from deck.widgets import Ctx, Widgets
 
 
-def setup_for(section=None):
-    return Setup({}, Sources(), Actions(), Widgets(), section=section or {})
+def setup_for(section=None, desktop=None):
+    return Setup({}, Sources(), Actions(), Widgets(), section=section or {}, desktop=desktop)
 
 
 def build(s, name, snap, options=None, slots=(0,), page="ai"):
@@ -62,7 +62,7 @@ def test_a_failed_desk_switch_shows_its_error_on_the_key_for_a_while():
     assert later.tile.message == ""
 
 
-class FakeT3:
+class FakeDesktop:   # the T3 part of deck.desktop.Desktop
     envs = [Environment("pc", "This PC", "u", ("t3",), primary=True)]
 
     def __init__(self):
@@ -85,8 +85,9 @@ class FakeT3:
 
 
 def test_new_thread_points_dictate_at_the_draft_and_dictate_toggles():
-    s, fake = setup_for(), FakeT3()
-    t3.setup(s, t3=fake)
+    fake = FakeDesktop()
+    s = setup_for(desktop=fake)
+    t3.setup(s)
     dictate = lambda: build(s, "t3.dictate", Snapshot(now=__import__("time").time(), t3_ui=s.sources.get("t3_ui")))
     assert dictate().tile.sub == "into open thread"
     s.actions.run("t3.new_thread", "project")
@@ -98,15 +99,15 @@ def test_new_thread_points_dictate_at_the_draft_and_dictate_toggles():
 
 
 def test_t3_actions_need_the_unlocked_desktop():
-    s = setup_for()
-    t3.setup(s, t3=FakeT3())
+    s = setup_for(desktop=FakeDesktop())
+    t3.setup(s)
     assert all(s.actions.get(n).requires == "input" for n in s.actions.names())
     assert not s.actions.usable("t3.dictate", "locked") and s.actions.usable("t3.dictate", "here")
 
 
 def test_new_thread_without_a_project_opens_the_picker_and_comes_back():
-    s = setup_for()
-    t3.setup(s, t3=FakeT3())
+    s = setup_for(desktop=FakeDesktop())
+    t3.setup(s)
     key = build(s, "t3.new_thread", Snapshot(t3=T3State()), page="work")
     assert key.action == Go(View("t3.new_thread", back="work"))
 

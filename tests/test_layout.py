@@ -133,8 +133,59 @@ def test_turning_a_plugin_off_is_deleting_its_section_and_keys():
     del c["printer"]
     ok, text = check(c)
     assert not ok and "unknown widget 'printer.camera'" in text
-    c["pages"] = [p for p in c["pages"] if p["name"] != "print"]
+    c["pages"] = [p for p in c["pages"] if p["name"] not in ("print", "signed_out")]
+    del c["deck"]["signed_out_page"]
     c["pages"][0]["keys"] = [k for k in c["pages"][0]["keys"] if not k["widget"].startswith("printer")]
     ok, text = check(c)
     assert ok, text
     assert "printer" not in text.split("plugins:")[1]
+
+
+# ----- who is at the PC (deck.desktop presence; the deck service) -----
+
+def example(presence, view, **fields):
+    import golden_cases as gc
+    from deck.catalog import registries as real
+    from test_golden import new_snapshot
+    c = load_config(EXAMPLE_CONFIG)
+    actions, widgets, _ = real(c)
+    lay = layout.parse(c, widgets, actions)
+    snap = new_snapshot({**gc.snapshot_fields("rich"), **fields})
+    snap.desktop = presence
+    return layout.build(lay, widgets, view, snap, actions), actions
+
+
+def test_signed_out_shows_only_what_works_without_a_session():
+    from deck.render import InfoTile
+    from deck.sources.printer import PrinterState
+    printing = PrinterState(online=True, state="printing", progress=.4)
+    for view in (View("fun"), View("ai"), View("print"), View("t3.new_thread", back="ai")):
+        keys, actions = example("signed_out", view, printer=printing)
+        assert keys[0].tile.value == "Signed out" and keys[1].tile.header == "Clock"
+        assert all(isinstance(keys[i].tile, Blank) for i in (2, 3, 9))
+        assert keys[4].action == Do("printer.camera") and keys[4].long is None    # still yes, stream no
+        assert keys[5].tile.header == "Printing" and keys[5].action is None        # status yes, Mainsail no
+        assert keys[7].action == Do("printer.pause") and keys[8].action == Do("printer.cancel")
+        assert keys[8].hold == 2.0 and keys[6].tile.label == "Filament Change"
+        assert keys[10].action is None and keys[11].action is None and keys[10].tile.dim
+        assert keys[10].tile.sub == "sign in"
+        assert keys[12].action == Go(View("print")) and keys[12].tile.accent      # 3D Print stays lit
+        assert keys[13].action == Do("kvm.toggle")
+        for k in keys.values():
+            for a in (k.action, k.long):
+                assert not isinstance(a, Do) or actions.get(a.action).requires is None
+
+
+def test_locked_keeps_music_and_disables_what_needs_the_desktop():
+    fun, _ = example("locked", View("fun"))
+    assert fun[8].action == Do("media.toggle") and fun[9].action == Do("media.next")
+    assert fun[0].action is None and fun[0].tile.dim                  # launching Dota 2
+    assert fun[2].action is None                                      # starting a playlist clicks in Spotify
+    assert fun[5].action == Do("headphones.reclaim")                  # headphones work while locked
+    ai, _ = example("locked", View("ai"))
+    assert ai[1].action is None and ai[3].action is None              # dictate, open a thread
+    assert ai[2].action == Go(View("t3.new_thread", back="ai"))       # browsing pages still works
+    away, _ = example("away", View("fun"))
+    assert away[8].action is None and away[13].action == Do("kvm.toggle")
+    here, _ = example("here", View("fun"))
+    assert here[0].action == Do("launch", ("steam://rungameid/570",))

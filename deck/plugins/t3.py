@@ -4,7 +4,7 @@
     [[t3.environments]]          # one per T3 Code server; see deck.example.toml
     key = "pc"  name = "This PC"  url = "http://127.0.0.1:3773"  cli = [...]  primary = true
 
-Sources: t3 (T3State), t3_ui (dictation / new-draft timers).
+Sources: t3 (T3State, polled by the desktop: deck.desktop), t3_ui (dictation / new-draft timers).
 Actions: t3.open_thread(thread), t3.open_app, t3.new_thread(project), t3.dictate
 Widgets:
     t3.open_app        bring T3 Code forward (or start it)
@@ -18,10 +18,9 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, replace
 
-from ..desktop import requires
 from ..keys import Do, Go, Key, View, age, offline, paged
 from ..render import AMBER, BLUE, GREEN, MUTED, RED, AppTile, InfoTile, ThreadTile
-from ..sources.t3 import T3, T3State, environments_from_config
+from ..sources.t3 import T3State
 from ..widgets import Option
 
 NAME = "t3"
@@ -37,32 +36,29 @@ class T3Ui:
     draft_until: float = 0.0
 
 
-def setup(s, t3: T3 | None = None) -> None:
-    t3 = t3 or T3(environments_from_config(s.section.get("environments", [])))
-    s.sources.add("t3", t3.poll, every=2.0, initial=T3State(envs=tuple(t3.envs)))
+def setup(s) -> None:
     s.sources.add("t3_ui", None, initial=T3Ui())
     s.lively(lambda snap: any(t.state == "working" for t in getattr(snap.t3, "threads", ())))
 
     def ui() -> T3Ui:
         return s.sources.get("t3_ui")
 
-    @requires("input")
     def new_thread(project) -> None:
-        """open a new draft in a project; the next Dictate types into it"""
-        t3.new_thread(project)
+        s.desktop.new_thread(project)
         s.sources.put("t3_ui", T3Ui(0.0, time.time() + DRAFT_S))
 
-    @requires("input")
     def dictate() -> None:
-        """toggle T3 Code's dictation in the open thread"""
-        t3.dictate()
+        s.desktop.dictate()
         now = time.time()
         s.sources.put("t3_ui", replace(ui(), dictating_until=0.0 if ui().dictating_until > now else now + DICTATE_S))
 
-    s.actions.add("t3.open_thread", t3.open_thread, requires="input", doc="open a thread in T3 Code")
-    s.actions.add("t3.open_app", t3.open_app, requires="input", doc="bring T3 Code forward, or start it")
-    s.actions.add("t3.new_thread", new_thread)
-    s.actions.add("t3.dictate", dictate)
+    s.actions.add("t3.open_thread", lambda thread: s.desktop.open_thread(thread), requires="input",
+                  doc="open a thread in T3 Code")
+    s.actions.add("t3.open_app", lambda: s.desktop.open_app(), requires="input",
+                  doc="bring T3 Code forward, or start it")
+    s.actions.add("t3.new_thread", new_thread, requires="input",
+                  doc="open a new draft in a project; the next Dictate types into it")
+    s.actions.add("t3.dictate", dictate, requires="input", doc="toggle T3 Code's dictation in the open thread")
 
     w = s.widgets
     project_opt = Option("project", str, "", "a project's title or folder name; empty: any project")

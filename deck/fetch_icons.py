@@ -35,7 +35,9 @@ def _mainsail() -> str:
     """The printer's Mainsail URL from deck.toml (it serves its own logo)."""
     try:
         from .config import load_config
-        return load_config()["pages"]["print"]["mainsail"]
+        pages = load_config().get("pages", [])
+        return next(k["open"] for p in pages for k in p.get("keys", [])
+                    if k.get("widget") == "printer.status" and k.get("open"))
     except Exception:
         return "http://mainsail.local/"
 

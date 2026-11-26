@@ -64,9 +64,11 @@ class ConsoleDdc:
             return
         want = (console.session, console.user)
         with self._lock:
-            current = self._child if self._for == want and self._child is not None and self._child.alive() else None
-            if current is not None or self._clock() - self._last_spawn < RESPAWN_S:
-                return
+            if self._for == want:
+                if self._child is not None and self._child.alive():
+                    return
+                if self._clock() - self._last_spawn < RESPAWN_S:   # it died: not again right away
+                    return
             old, self._child, self._for = self._child, None, want
             self._last_spawn = self._clock()
         if old is not None:
@@ -109,10 +111,10 @@ class ConsoleDdc:
     # ----- internals -----
 
     def _peer_now(self) -> Peer:
-        end = self._clock() + CONNECT_WAIT_S
+        end = time.monotonic() + CONNECT_WAIT_S
         with self._lock:
             while self._peer is None:
-                left = end - self._clock()
+                left = end - time.monotonic()
                 if left <= 0:
                     raise ConnectionError("monitor helper isn't running")
                 self._lock.wait(min(left, 0.25))

@@ -32,7 +32,7 @@ class KvmUi:
 
 
 def setup(s, kvm: Kvm | None = None) -> None:
-    kvm = kvm or Kvm.from_config(s.section)
+    kvm = kvm or Kvm.from_config(s.section, ddc=s.ddc)
     s.sources.add("kvm", kvm.poll, every=3.0)
     s.sources.add("kvm_ui", None, initial=KvmUi())
     s.lively(lambda snap: snap.kvm_ui is not None and snap.kvm_ui.busy)

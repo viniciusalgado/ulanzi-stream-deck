@@ -60,3 +60,18 @@ def test_started_sources_poll_on_their_own_until_stopped():
     s.start()
     assert changed.wait(2) and s.get("x") == "live"
     s.stop()
+
+
+def test_pushed_sources_change_only_through_put():
+    changes = []
+    s = Sources(on_change=lambda: changes.append(1))
+    s.add("t3", None, initial="-")
+    s.start()
+    s.poll_all()
+    assert s.refresh("t3") == "-" and changes == []
+    s.put("t3", "a")
+    s.put("t3", "a")
+    assert s.get("t3") == "a" and changes == [1]
+    with pytest.raises(KeyError):
+        s.put("nope", 1)
+    s.stop()

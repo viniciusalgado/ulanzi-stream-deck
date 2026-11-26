@@ -17,6 +17,7 @@
 [deck]
 brightness = 85            # 0-100. The screen never sleeps while the daemon runs.
 start_page = "ai"          # a page name below
+signed_out_page = "signed_out"   # shown while nobody is signed in (only with the deck service)
 stop_ulanzi_app = true     # the official Ulanzi app also drives the screen; only one program can
 plugins = []               # extra plugin modules (Python import paths), see deck/plugins/__init__.py
 
@@ -147,6 +148,47 @@ badge = "printer"
   label = "Cura"
   icon = "app:cura"
   open = 'C:\Program Files\UltiMaker Cura 5.12.0\UltiMaker-Cura.exe'
+
+# Shown, whatever page was up, while nobody is signed in to Windows (the deck service; see docs/plans/
+# service-mode.md): only keys that work without a session. Left out of the nav keys; the 3D Print one stays lit.
+[[pages]]
+name = "signed_out"
+label = "Signed out"
+icon = "lucide:monitor"
+color = "#fb923c"
+nav = false
+nav_as = "print"
+
+  [[pages.keys]]
+  slot = 0
+  widget = "session"
+
+  [[pages.keys]]
+  slot = 1
+  widget = "clock"
+
+  [[pages.keys]]
+  slot = 4
+  widget = "printer.camera"
+  stream = "http://printer.local/webcam/?action=stream"
+
+  [[pages.keys]]
+  slot = 5
+  widget = "printer.status"
+  open = "http://printer.local/"
+
+  [[pages.keys]]
+  slot = 6
+  widget = "printer.filament"
+
+  [[pages.keys]]
+  slot = 7
+  widget = "printer.pause_resume"
+
+  [[pages.keys]]
+  slot = 8
+  widget = "printer.cancel"
+  hold = 2.0
 
 # On every page.
 [[bottom]]

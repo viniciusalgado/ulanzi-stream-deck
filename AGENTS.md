@@ -45,6 +45,8 @@ A deck.toml from before layouts lived in it (it has `[pages.fun]` tables) is con
 - A **plugin** is one module in `deck/plugins/` (or any importable module listed in `[deck] plugins`), with
   `NAME`, `SECTION` and `setup(s)`. It registers its sources, actions, widgets and badges there. See
   `deck/plugins/__init__.py` for what `s` offers, and `deck/plugins/printer.py` for a complete one.
+- Anything that needs the user's Windows session goes through `s.desktop` (deck.desktop): the deck
+  may run as a service with nobody signed in, and the desktop is then a proxy to the user's session.
 - Actions that need the user's desktop are marked `requires="input"` (unlocked) or `"session"` (works while
   locked). The layout dims keys whose action the session can't run.
 

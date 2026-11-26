@@ -37,8 +37,10 @@ def key(slot, widget: str, **options) -> str:
     return "\n".join(lines) + "\n"
 
 
-def page(name, label, icon, color, badge, keys) -> str:
-    head = f'[[pages]]\nname = {q(name)}\nlabel = {q(label)}\nicon = {q(icon)}\ncolor = {q(color)}\nbadge = {q(badge)}\n'
+def page(name, label, icon, color, keys, badge=None, nav_as=None) -> str:
+    head = f'[[pages]]\nname = {q(name)}\nlabel = {q(label)}\nicon = {q(icon)}\ncolor = {q(color)}\n'
+    head += f"badge = {q(badge)}\n" if badge else ""
+    head += f"nav = false\nnav_as = {q(nav_as)}\n" if nav_as else ""
     return head + "\n" + "\n".join(keys)
 
 
@@ -60,12 +62,16 @@ def layout_text(old: dict) -> str:
                   key(6, "printer.filament"), key(7, "printer.pause_resume"), key(8, "printer.cancel", hold=2.0)]
     if prt.get("cura"):
         print_keys.append(key(9, "launch", label="Cura", icon="app:cura", open=prt["cura"]))
+    signed_out_keys = [key(0, "session"), key(1, "clock"), key(4, "printer.camera", stream=prt.get("camera_page")),
+                       key(5, "printer.status", open=prt.get("mainsail")), key(6, "printer.filament"),
+                       key(7, "printer.pause_resume"), key(8, "printer.cancel", hold=2.0)]
     ai_keys = [key(0, "t3.open_app"), key(1, "t3.dictate"), key(2, "t3.new_thread"),
                key([3, 4, 5, 6, 7, 8, 9], "t3.threads")]
     parts = ["# ================= pages (moved from [pages.*] by scripts/migrate_config.py) =================\n",
-             page("fun", "Fun", "lucide:gamepad-2", "#f472b6", "media", fun_keys),
-             page("ai", "AI", "lucide:bot", "#a78bfa", "t3", ai_keys),
-             page("print", "3D Print", "lucide:printer", "#fb923c", "printer", print_keys),
+             page("fun", "Fun", "lucide:gamepad-2", "#f472b6", fun_keys, badge="media"),
+             page("ai", "AI", "lucide:bot", "#a78bfa", ai_keys, badge="t3"),
+             page("print", "3D Print", "lucide:printer", "#fb923c", print_keys, badge="printer"),
+             page("signed_out", "Signed out", "lucide:monitor", "#fb923c", signed_out_keys, nav_as="print"),
              '[[bottom]]\nslots = [10, 11, 12]\nwidget = "nav"\n\n[[bottom]]\nslot = 13\nwidget = "kvm.switch"\n',
              "[media]\n" + f"playlists = {q(fun.get('playlists', []))}\n"
              + (f"spotify_app = {q(fun['spotify_app'])}\n" if fun.get("spotify_app") else "")]
@@ -95,6 +101,8 @@ def migrate(path: Path) -> str:
     for h, t in kept:
         out.append(t)
         if h == "[deck]":
+            if "signed_out_page" not in old.get("deck", {}):
+                out.append('signed_out_page = "signed_out"   # shown while nobody is signed in (deck service)\n')
             out.append("\n" + layout_text(old))
     return "".join(out)
 

@@ -8,6 +8,7 @@ deck.toml:
 
     [deck]
     start_page = "ai"
+    signed_out_page = "away"     # optional: the page shown, whatever page was up, while nobody is signed in
 
     [[pages]]
     name = "fun"                 # what View.page and Go(...) use
@@ -15,6 +16,8 @@ deck.toml:
     icon = "lucide:gamepad-2"
     color = "#f472b6"            # nav highlight, and the accent widgets on this page use
     badge = "media"              # optional: a badge a plugin registered (shown on the nav key)
+    nav = false                  # optional: leave this page out of the nav keys (e.g. the signed-out page)
+    nav_as = "print"             # optional: while this page shows, light that page's nav key
 
       [[pages.keys]]
       slot = 0                   # or: slots = [2, 3, 4] for widgets that fill several keys
@@ -30,7 +33,7 @@ deck.toml:
 
 A view whose page is a screen a widget registered (e.g. "t3.new_thread") shows that screen on slots 0-9, with the
 bottom row of the page it came from (View.back). Keys whose action the Windows session doesn't allow right now
-(snapshot.desktop, see deck.actions.usable) are drawn dimmed and do nothing.
+(snapshot.desktop, see deck.actions.usable) lose that action; a key left with nothing to do is drawn dimmed.
 """
 from __future__ import annotations
 
@@ -67,6 +70,8 @@ class PageSpec:
     color: str
     badge: str | None
     placements: tuple[Placement, ...]
+    nav: bool = True
+    nav_as: str | None = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +79,7 @@ class Layout:
     pages: tuple[PageSpec, ...]
     bottom: tuple[Placement, ...]
     start_page: str
+    signed_out_page: str | None = None
 
     def page(self, name: str | None) -> PageSpec | None:
         return next((p for p in self.pages if p.name == name), None)
@@ -101,7 +107,7 @@ def parse(cfg: dict, widgets: Widgets, actions: Actions) -> Layout:
         if name in widgets.screens:
             problems.append(f"{where}: this name belongs to a screen; pick another")
         seen.add(name)
-        extra = set(raw) - {"name", "label", "icon", "color", "badge", "keys"}
+        extra = set(raw) - {"name", "label", "icon", "color", "badge", "keys", "nav", "nav_as"}
         if extra:
             problems.append(f"{where}: unknown settings {sorted(extra)}")
         badge = raw.get("badge")
@@ -115,13 +121,20 @@ def parse(cfg: dict, widgets: Widgets, actions: Actions) -> Layout:
                     problems.append(f"{where}: slot {s} used by both {used[s]!r} and {p.widget!r}")
                 used[s] = p.widget
         pages.append(PageSpec(name, raw.get("label", name.title()), raw.get("icon", "lucide:square"),
-                              raw.get("color", "#a78bfa"), badge, tuple(placements)))
+                              raw.get("color", "#a78bfa"), badge, tuple(placements), bool(raw.get("nav", True)),
+                              raw.get("nav_as")))
     start = cfg.get("deck", {}).get("start_page") or (pages[0].name if pages else "")
     if pages and start not in seen:
         problems.append(f"[deck] start_page {start!r} is not a page (pages: {', '.join(sorted(seen))})")
+    signed_out = cfg.get("deck", {}).get("signed_out_page")
+    if signed_out is not None and signed_out not in seen:
+        problems.append(f"[deck] signed_out_page {signed_out!r} is not a page")
+    for p in pages:
+        if p.nav_as is not None and p.nav_as not in seen:
+            problems.append(f"page {p.name!r}: nav_as {p.nav_as!r} is not a page")
     if problems:
         raise LayoutError(problems)
-    return Layout(tuple(pages), bottom, start)
+    return Layout(tuple(pages), bottom, start, signed_out)
 
 
 def _placements(raw_list, where: str, widgets: Widgets, actions: Actions, problems: list[str]) -> list[Placement]:
@@ -187,6 +200,8 @@ def _action(raw, here: str, actions: Actions, problems: list[str]) -> Do | None:
 
 def build(layout: Layout, widgets: Widgets, view: View, snap, actions: Actions | None = None) -> dict[int, Key]:
     keys: dict[int, Key] = {i: Key(Blank()) for i in SLOTS}
+    if layout.signed_out_page and snap.desktop == "signed_out":
+        view = View(layout.signed_out_page)          # nobody signed in: only what works without a session
     screen = widgets.screens.get(view.page)
     if screen is not None:
         page = layout.page(view.back) or layout.page(layout.start_page)
@@ -231,10 +246,14 @@ def _only(keys: dict[int, Key], slots) -> dict[int, Key]:
 
 
 def _gate(key: Key, actions: Actions, presence: str) -> Key:
-    """Dim a key whose actions the session doesn't allow now, and take its actions away."""
+    """Take away the actions the session doesn't allow now; a key left with nothing to do is drawn dimmed."""
     def ok(a):
         return not isinstance(a, Do) or a.action not in actions or actions.usable(a.action, presence)
-    if ok(key.action) and ok(key.long):
+    action = key.action if ok(key.action) else None
+    long = key.long if ok(key.long) else None
+    if action is key.action and long is key.long:
         return key
-    tile = replace(key.tile, dim=True) if hasattr(key.tile, "dim") else key.tile
-    return Key(tile, key.action if ok(key.action) else None, key.hold, key.long if ok(key.long) else None)
+    tile = key.tile
+    if action is None and long is None and hasattr(tile, "dim"):
+        tile = replace(tile, dim=True)
+    return Key(tile, action, key.hold if action is not None else 0.0, long)

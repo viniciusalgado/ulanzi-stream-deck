@@ -4,7 +4,7 @@
     playlists = ["spotify:playlist:..."]       # for the media.playlists widget, in order
     spotify_app = 'shell:AppsFolder\\SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify'   # opened when nothing plays
 
-Sources: media (MediaState), playlists (title + cover of each).
+Sources (polled by the desktop: deck.desktop): media (MediaState), playlists (title + cover of each).
 Actions: media.toggle, media.next, media.prev, media.play_playlist(uri)
 Widgets: media.now_playing, media.prev, media.next, media.playlists (several slots). Badge: media (playing).
 """
@@ -12,24 +12,19 @@ from __future__ import annotations
 
 from ..keys import Do, Key
 from ..render import GREEN, AppTile, ArtTile
-from ..sources.media import Media, MediaState
+from ..sources.media import MediaState
 from ..widgets import Option
 
 NAME = "media"
 SECTION = "media"
 
 
-def setup(s, media: Media | None = None) -> None:
-    if media is None:
-        from ..sources.spotify import SpotifyApi
-        media = Media(s.section.get("playlists", []), SpotifyApi.load())
-    s.sources.add("media", media.poll, every=1.0, initial=MediaState())
-    s.sources.add("playlists", lambda: tuple(media.playlist(uri) for uri in media.playlists), every=600.0,
-                  initial=())
-    s.actions.add("media.toggle", media.toggle, requires="session", doc="play / pause")
-    s.actions.add("media.next", media.next, requires="session", doc="next track")
-    s.actions.add("media.prev", media.prev, requires="session", doc="previous track")
-    s.actions.add("media.play_playlist", media.play_playlist, requires="input", doc="start a Spotify playlist")
+def setup(s) -> None:
+    s.actions.add("media.toggle", lambda: s.desktop.media_toggle(), requires="session", doc="play / pause")
+    s.actions.add("media.next", lambda: s.desktop.media_next(), requires="session", doc="next track")
+    s.actions.add("media.prev", lambda: s.desktop.media_prev(), requires="session", doc="previous track")
+    s.actions.add("media.play_playlist", lambda uri: s.desktop.play_playlist(uri), requires="input",
+                  doc="start a Spotify playlist")
     w = s.widgets
 
     @w.widget("media.now_playing", needs=("media",),

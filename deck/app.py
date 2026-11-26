@@ -1,6 +1,12 @@
 """The daemon: wires the plugins, the layout, presses and the deck together, and keeps the deck showing the view.
 
-    App(load_config()).run()      # blocks; one instance per user (see __main__)
+    App(load_config()).run()                                   # `deck run`: everything in this process
+    App(cfg, desktop=RemoteDesktop(...), ddc=ConsoleDdc(...))  # the service: see deck.service
+
+`desktop` is where everything that needs the signed-in user's session happens (T3 Code, music, headphones,
+launching, hotkeys): deck.desktop.Desktop in this process, or the agent's RemoteDesktop in the service, which also
+says whether anyone is signed in (the "desktop" source). `ddc` switches the monitors (the console helper's in the
+service). Plugins reach both through deck.plugins.Setup.
 
 Flow:
   - Plugins (deck.plugins) register sources, actions, widgets and badges. deck.layout reads the pages from
@@ -20,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import layout, plugins, winutil
 from .actions import Actions
+from .desktop import Desktop
 from .device import Deck
 from .keys import Do, Go, Key, Snapshot, View
 from .presses import Navigate, Presses, Run
@@ -31,8 +38,9 @@ log = logging.getLogger(__name__)
 
 
 class App:
-    def __init__(self, cfg: dict, *, deck_factory=Deck):
+    def __init__(self, cfg: dict, *, deck_factory=Deck, desktop=None, ddc=None):
         self.cfg = cfg
+        self.desktop = desktop if desktop is not None else Desktop.from_config(cfg)
         self._cond = threading.Condition()
         self._dirty = True
         self._stop = threading.Event()
@@ -40,8 +48,10 @@ class App:
         self.sources = Sources(on_change=self._mark_dirty)    # names = Snapshot attributes
         self.actions = Actions()
         self.widgets = Widgets()
+        self.desktop.attach(self.sources)              # t3, media, playlists, headphones (as configured), desktop
         self._setup = plugins.Setup(cfg, self.sources, self.actions, self.widgets, dirty=self._mark_dirty,
-                                    showing=self._showing, pressed_at=lambda: self._pressed_at)
+                                    showing=self._showing, pressed_at=lambda: self._pressed_at,
+                                    desktop=self.desktop, ddc=ddc)
         self.plugins = plugins.load(cfg, self._setup)
         self.layout = layout.parse(cfg, self.widgets, self.actions)      # LayoutError: deck check says why
         self.view = View(self.layout.start_page)

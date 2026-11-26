@@ -106,13 +106,18 @@ playlists = ["spotify:playlist:..."]
 5. **Tools for people and agents.** `python -m deck check`, `python -m deck widgets`, and `AGENTS.md` (the edit
    loop: edit `deck.toml` -> `deck check` -> `deck preview` -> look at the PNGs).
 
-## Coordination with service mode (docs/plans/service-mode.md)
+## Service mode (merged from branch `service-mode`)
 
-- Its `desktop.ACTIONS` and `requires` marks carry over: desktop-side actions keep their marks in the registry,
-  so presence gating is a registry query.
-- `RemoteDesktop` can forward by action name instead of by method. Desktop-side plugins (t3, media,
-  headphones, `launch`) are the ones the agent runs. Host-side plugins (printer, kvm) stay in the service.
-- Both plans edit `app.py` and `pages.py`. This branch lands first, and service mode rebases onto it.
+- The desktop-side plugins (core's `launch` / `hotkey`, t3, media, headphones) call `Setup.desktop`: the local
+  `deck.desktop.Desktop` in `deck run`, or `deck.agent.RemoteDesktop` in the service, which forwards each call to
+  the agent in the user's session. `Desktop` polls the t3 / media / playlists / headphones sources for the sections
+  deck.toml has, and provides the `desktop` presence source.
+- Presence gating is generic: `layout.build` takes each key's actions that `Actions.usable(name, presence)` refuses
+  away, and dims a key left with nothing to do.
+- The signed-out page is an ordinary layout page: `[deck] signed_out_page = "signed_out"` shows it while nobody is
+  signed in, `nav = false` keeps it out of the nav keys and `nav_as = "print"` keeps 3D Print lit. The `session`
+  and `clock` widgets (core) fill it.
+- `kvm` gets the service's console-helper DDC through `Setup.ddc`.
 
 ## Behaviour changes (deliberate)
 

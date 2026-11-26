@@ -17,13 +17,16 @@ What `setup` gets (Setup):
     s.showing(prefix)            is a widget whose name starts with `prefix` on the view shown now?
     s.pressed_at()               time.monotonic() of the last key press (for latency logs)
     s.lively(fn)                 fn(snapshot) -> bool: redraw every second while true (animations, timers)
+    s.desktop                    deck.desktop.Desktop (or the service's RemoteDesktop): everything that needs the
+                                 user's session goes through it, so it works the same in `deck run` and the service
+    s.ddc                        monitor switching for the kvm plugin (None: its own Ddc)
 Plugins never import the App: everything they need is in Setup, so each one can be tested alone.
 """
 from __future__ import annotations
 
 import importlib
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 from ..actions import Actions
@@ -45,6 +48,8 @@ class Setup:
     pressed_at: Callable[[], float] = lambda: 0.0
     section: dict = field(default_factory=dict)
     lively_checks: list = field(default_factory=list)
+    desktop: object = None
+    ddc: object = None
 
     def lively(self, fn: Callable[[object], bool]) -> None:
         self.lively_checks.append(fn)
@@ -66,11 +71,7 @@ def load(cfg: dict, setup: Setup) -> list[str]:
     names = []
     for mod in modules(cfg):
         section = cfg.get(mod.SECTION, {}) if getattr(mod, "SECTION", None) else {}
-        mod.setup(_with_section(setup, section))
+        mod.setup(replace(setup, section=section))
         names.append(mod.NAME)
     return names
 
-
-def _with_section(s: Setup, section: dict) -> Setup:
-    return Setup(s.cfg, s.sources, s.actions, s.widgets, s.dirty, s.showing, s.pressed_at, section,
-                 s.lively_checks)
