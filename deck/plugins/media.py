@@ -2,21 +2,26 @@
 
     [media]
     playlists = ["spotify:playlist:..."]       # for the media.playlists widget, in order
+    played = true                              # also every playlist played in the Spotify app, newest first
     spotify_app = 'shell:AppsFolder\\SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify'   # opened when nothing plays
 
-Sources (polled by the desktop: deck.desktop): media (MediaState), playlists (title + cover of each).
+Sources (polled by the desktop: deck.desktop): media (MediaState), playlists (title + cover of each: with
+`played`, the played ones newest first, then the configured ones; see deck.sources.spotify_history).
 Actions: media.toggle, media.next, media.prev, media.play_playlist(uri)
-Widgets: media.now_playing, media.prev, media.next, media.playlists (several slots). Badge: media (playing).
+Widgets: media.now_playing, media.prev, media.next, media.playlists (several slots; `all = true`: its last slot
+opens the playlist screen). Screen: media.all_playlists (every playlist, paged). Badge: media (playing).
 """
 from __future__ import annotations
 
-from ..keys import Do, Key
-from ..render import GREEN, AppTile, ArtTile
+from ..keys import Do, Go, Key, View, paged
+from ..render import GREEN, MUTED, AppTile, ArtTile
 from ..sources.media import MediaState
 from ..widgets import Option
 
 NAME = "media"
 SECTION = "media"
+SCREEN = "media.all_playlists"
+SCREEN_SLOTS = (1, 2, 3, 4, 5, 6, 7, 8, 9)   # 0 is Back; the bottom row is every page's
 
 
 def setup(s) -> None:
@@ -49,11 +54,34 @@ def setup(s) -> None:
                                                                              "media.prev"))
     w.widget("media.next", needs=("media",), doc="next track")(transport("lucide:skip-forward", "Next", "media.next"))
 
+    def playlist_key(pl, then=None):
+        return Key(ArtTile(pl.cover, pl.title, fallback="lucide:list-music"),
+                   Do("media.play_playlist", (pl.uri,), then=then))
+
     @w.widget("media.playlists", slots="many", needs=("playlists",),
-              doc="the [media] playlists, one per slot; a tap starts it")
+              options=(Option("all", bool, False, "the last slot opens a screen with every playlist"),),
+              doc="playlists one per slot (with [media] played: the latest played first); a tap starts it")
     def playlists(ctx):
-        return {slot: Key(ArtTile(pl.cover, pl.title, fallback="lucide:list-music"),
-                          Do("media.play_playlist", (pl.uri,)))
-                for slot, pl in zip(ctx.slots, ctx.snap.playlists or ())}
+        items, slots = ctx.snap.playlists or (), list(ctx.slots)
+        keys = {}
+        if ctx.options["all"]:
+            more = slots.pop()
+            keys[more] = Key(AppTile("lucide:list-music", "Playlists", sub=f"all {len(items)}" if items else "all",
+                                     color=ctx.color), Go(View(SCREEN, back=ctx.page.name)))
+        keys.update({slot: playlist_key(pl) for slot, pl in zip(slots, items)})
+        return keys
+
+    def all_playlists(ctx):
+        back_page = ctx.page.name if ctx.page is not None else None
+        keys = {0: Key(AppTile("lucide:arrow-left", "Back", color=MUTED), Go(View(back_page)))}
+        items = list(ctx.snap.playlists or ())
+        if not items:
+            keys[1] = Key(AppTile("lucide:list-music", "Playlists", sub="none played yet", dim=True))
+            return keys
+        keys.update(paged(items, SCREEN_SLOTS, ctx.view, lambda pl: playlist_key(pl, then=View(back_page)),
+                          lambda o: View(SCREEN, offset=o, back=ctx.view.back)))
+        return keys
+
+    w.screen(SCREEN, all_playlists)
 
     w.badge("media", lambda snap: ("▶", GREEN) if getattr(snap.media, "playing", False) else None)

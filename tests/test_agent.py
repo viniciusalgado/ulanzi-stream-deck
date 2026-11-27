@@ -48,7 +48,7 @@ class FakeT3:
 
 def agent_desktop():
     t3 = FakeT3()
-    media = NS(poll=lambda: MediaState(True, True, "Song"), playlists=[], playlist=None,
+    media = NS(poll=lambda: MediaState(True, True, "Song"), playlists=[], playlist=None, shelf=tuple,
                toggle=lambda: t3.calls.append(("toggle",)))
     hp = NS(poll=lambda: HeadphoneState(True, True, 80))
     return Desktop(t3, media, hp, launcher=lambda target: t3.calls.append(("launch", target)),

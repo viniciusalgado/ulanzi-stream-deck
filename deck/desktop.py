@@ -28,6 +28,7 @@ from . import winutil, winsession
 from .sources.headphones import HeadphoneState, Headphones
 from .sources.media import Media, MediaState
 from .sources.spotify import SpotifyApi
+from .sources.spotify_history import PlayedPlaylists
 from .sources.t3 import T3, T3State, environments_from_config
 
 log = logging.getLogger(__name__)
@@ -74,7 +75,10 @@ class Desktop:
     def from_config(cls, cfg: dict) -> "Desktop":
         """The parts deck.toml turns on: [t3], [media], [headphones] (their plugins' sections)."""
         t3 = T3(environments_from_config(cfg["t3"].get("environments", []))) if "t3" in cfg else None
-        media = Media(cfg["media"].get("playlists", []), SpotifyApi.load()) if "media" in cfg else None
+        media = None
+        if "media" in cfg:
+            played = PlayedPlaylists() if cfg["media"].get("played", False) else None
+            media = Media(cfg["media"].get("playlists", []), SpotifyApi.load(), played)
         headphones = Headphones(cfg["headphones"].get("name", "WH-1000XM5")) if "headphones" in cfg else None
         return cls(t3, media, headphones)
 
@@ -84,7 +88,7 @@ class Desktop:
             sources.add("t3", self.t3.poll, every=2.0, initial=initial["t3"])
         if self.media is not None:
             sources.add("media", self.media.poll, every=1.0, initial=initial["media"])
-            sources.add("playlists", self._playlists, every=600.0, initial=initial["playlists"])
+            sources.add("playlists", self.media.shelf, every=30.0, initial=initial["playlists"])
         if self.headphones is not None:
             sources.add("headphones", self.headphones.poll, every=3.0, initial=initial["headphones"])
         sources.add("desktop", self._presence, every=2.0, initial="here")
@@ -163,9 +167,6 @@ class Desktop:
             self._refresh("headphones")
 
     # ----- internals -----
-
-    def _playlists(self):
-        return tuple(self.media.playlist(uri) for uri in self.media.playlists)
 
     def _refresh(self, name: str) -> None:
         if self._sources is not None:

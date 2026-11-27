@@ -209,6 +209,8 @@ playlists = [
   "spotify:playlist:37i9dQZF1DX4dyzvuaRJ0n",
 ]
 spotify_app = 'shell:AppsFolder\SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify'
+# played = true   # also every playlist you've played in the Spotify app, newest first (read from its own
+#                 # files). Pair it with `all = true` on media.playlists: its last key opens them all.
 
 # Bluetooth headphones. The default output device is never changed.
 [headphones]
