@@ -1,12 +1,14 @@
 """Music: what's playing (any app, Spotify preferred), transport keys, and playlist shortcuts.
 
 Interface:
-    media = Media(playlists=["spotify:playlist:..."], spotify=SpotifyApi.load() or None)
-                                         # optional: start_playlist= (spotify_ui's), launcher=, sleep= for tests
+    media = Media(playlists=["spotify:playlist:..."], spotify=SpotifyApi.load() or None,
+                  played=PlayedPlaylists() or None)   # optional: start_playlist= (spotify_ui's), launcher=, sleep=
     state = media.poll()                 # MediaState from Windows' media session (title, artist, cover, playing)
     media.toggle() / next() / prev()
     media.play_playlist(uri)             # starts it via the Spotify Web API if logged in, else opens it in Spotify
     media.playlist(uri) -> Playlist      # title + cover, from Spotify's public oEmbed, cached on disk
+    media.shelf() -> (Playlist, ...)     # with `played`: what you've played, newest first, then `playlists`;
+                                         # else just `playlists`
 
 Now-playing needs no account: it reads the Windows media session that Spotify (and browsers) publish.
 """
@@ -19,8 +21,10 @@ import logging
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 
 from .. import winutil
@@ -29,6 +33,7 @@ from ..paths import CACHE_DIR
 log = logging.getLogger(__name__)
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 PLAYING = 4  # GlobalSystemMediaTransportControlsSessionPlaybackStatus.PLAYING
+RETRY_S = 3600.0   # a playlist Spotify couldn't describe (deleted, private, offline) is asked about again after this
 
 
 @dataclass(frozen=True)
@@ -49,9 +54,11 @@ class Playlist:
 
 
 class Media:
-    def __init__(self, playlists: list[str], spotify=None, *, start_playlist=None, launcher=None, sleep=time.sleep):
+    def __init__(self, playlists: list[str], spotify=None, played=None, *, start_playlist=None, launcher=None,
+                 sleep=time.sleep):
         self.playlists = playlists
         self.spotify = spotify
+        self.played = played
         self._start_playlist = start_playlist
         self._launch = launcher or winutil.launch
         self._sleep = sleep
@@ -60,6 +67,9 @@ class Media:
         self._loop = asyncio.new_event_loop()
         self._lock = threading.Lock()
         self._playlists: dict[str, Playlist] = {}
+        self._failed: dict[str, float] = {}
+        self._pending: set[str] = set()
+        self._pool = ThreadPoolExecutor(6, thread_name_prefix="playlist")
 
     # ----- now playing -----
 
@@ -164,8 +174,40 @@ class Media:
     def can_start_playlists(self) -> bool:
         return True   # via the Web API when logged in, else by pressing Play in the Spotify window
 
+    def shelf(self, budget: float = 8.0) -> tuple[Playlist, ...]:
+        """The playlists keys can offer. With `played`: every one you've played in Spotify, newest first, then the
+        configured ones not among them. Played ones are looked up in parallel for up to `budget` seconds; those
+        not back yet show on a later call, and those Spotify can't describe are left out."""
+        if self.played is None:
+            return tuple(self.playlist(uri) for uri in self.playlists)
+        try:
+            played = self.played.recent()
+        except Exception as e:
+            log.info("couldn't read Spotify's play history: %s", e)
+            played = []
+        now = time.time()
+        todo = [u for u in played if u not in self._playlists and u not in self._pending
+                and now - self._failed.get(u, -RETRY_S) >= RETRY_S]
+        if todo:
+            self._pending.update(todo)
+
+            def look(uri):
+                try:
+                    if self._lookup(uri) is None:
+                        self._failed[uri] = time.time()
+                finally:
+                    self._pending.discard(uri)
+            wait([self._pool.submit(look, u) for u in todo], timeout=budget)
+        out = [self._playlists[u] for u in played if u in self._playlists]
+        shown = {p.uri for p in out}
+        return tuple(out + [self.playlist(u) for u in self.playlists if u not in shown])
+
     def playlist(self, uri: str) -> Playlist:
         """Title and cover for a playlist; cached on disk after the first lookup."""
+        return self._playlists.get(uri) or self._lookup(uri) or Playlist(uri, _short(uri), None)
+
+    def _lookup(self, uri: str) -> Playlist | None:
+        """Title and cover from the disk cache or Spotify's oEmbed; None when Spotify couldn't say (not cached)."""
         if uri in self._playlists:
             return self._playlists[uri]
         cache = CACHE_DIR / "playlists"
@@ -189,8 +231,9 @@ class Media:
                 if cover:
                     cover_file.write_bytes(cover)
             except Exception as e:
-                log.info("playlist lookup failed for %s: %s", uri, e)
-                return Playlist(uri, _short(uri), None)   # not cached: try again next time
+                gone = isinstance(e, urllib.error.HTTPError) and e.code == 404   # deleted or private: expected
+                log.log(logging.DEBUG if gone else logging.INFO, "playlist lookup failed for %s: %s", uri, e)
+                return None   # not cached: try again next time
         pl = Playlist(uri, title or _short(uri), cover)
         self._playlists[uri] = pl
         return pl
