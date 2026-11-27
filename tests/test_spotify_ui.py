@@ -3,7 +3,7 @@ import io
 
 from PIL import Image, ImageDraw
 
-from deck.sources.spotify_ui import cover_on_page, find_play_button
+from deck.sources.spotify_ui import CHANGED, STEADY, cover_on_page, find_play_button, header_change
 
 GREEN = (30, 215, 96)
 
@@ -54,3 +54,21 @@ def test_only_the_right_playlists_cover_matches():
 
 def test_no_button_on_an_empty_window():
     assert find_play_button(Image.new("RGB", (1000, 750), (18, 18, 18))) is None
+
+
+def banner_page(seed: int) -> Image.Image:
+    """A "This Is <artist>" page: a wide photo banner and the title over it, no square cover."""
+    img = page(cover(1), "play")
+    img.paste(cover(seed).resize((612, 200)), (88, 64))
+    ImageDraw.Draw(img).rectangle((104, 200, 600, 240), fill=(250, 250, 250))       # the big title
+    return img
+
+
+def test_a_banner_page_has_no_matching_cover_but_its_header_shows_the_page_changed():
+    old, new = page(cover(3), "play"), banner_page(5)
+    b = find_play_button(new)
+    assert cover_on_page(new, b, png(cover(5))) > 0.06                     # why the cover check alone can't work
+    assert header_change(old, new, b) > CHANGED                            # switched away from the old page
+    assert header_change(new, banner_page(5), b) < STEADY                  # and finished loading
+    assert header_change(old, page(cover(3), "pause"), b) < CHANGED         # the old page, playing: not a switch
+    assert header_change(None, new, b) == 1.0
