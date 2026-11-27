@@ -10,8 +10,12 @@ So this does what a person would: bring Spotify forward, wait until the page hea
 Play button below the header, and click it, putting the mouse back afterwards. If the button already shows
 Pause, the playlist is playing and nothing is clicked.
 
-The pure parts (`find_play_button`, `cover_on_page`) take a PIL image of the window, so they are tested on
-screenshots.
+Some pages never show the cover: "This Is <artist>" and the like get a wide photo banner instead. For those, the
+page counts as switched once the header above the Play button differs from the one shown before the playlist was
+opened and has stopped changing (it is no longer loading).
+
+The pure parts (`find_play_button`, `cover_on_page`, `header_change`) take PIL images of the window, so they are
+tested on drawn stand-ins.
 """
 from __future__ import annotations
 
@@ -120,6 +124,19 @@ def cover_on_page(img: Image.Image, button: PlayButton, cover: bytes) -> float:
     return best
 
 
+def header_change(before: Image.Image | None, now: Image.Image, button: PlayButton) -> float:
+    """How different the page header above `button` is between two shots of the window (0 = same, 1 = unrelated).
+
+    The area is the header's left part, right above the button (the title and art; not the now-playing panel)."""
+    if before is None or before.size != now.size:
+        return 1.0
+    x0, y0, x1, _ = button.box
+    w = x1 - x0
+    box = (x0, max(0, y0 - 5 * w), min(now.width, x0 + 4 * w), max(1, y0 - 4))
+    a, b = (im.convert("L").crop(box).resize((32, 16), Image.BILINEAR) for im in (before, now))
+    return sum(ImageStat.Stat(ImageChops.difference(a, b)).mean) / 255
+
+
 # ---------------- the live part ----------------
 
 def _window_image(hwnd) -> tuple[Image.Image, tuple[int, int]]:
@@ -153,10 +170,36 @@ def start_playlist(uri: str, cover: bytes | None, timeout: float = 8.0) -> bool:
             winutil.give_back_focus(previous)
 
 
+def _settled_image(hwnd, tries: int = 6) -> Image.Image:
+    """The window once two shots in a row look the same (it may be restoring from minimized, or repainting)."""
+    shot = _window_image(hwnd)[0]
+    for _ in range(tries):
+        time.sleep(0.15)
+        now = _window_image(hwnd)[0]
+        if now.size == shot.size and sum(ImageStat.Stat(ImageChops.difference(
+                now.convert("L").resize((64, 48)), shot.convert("L").resize((64, 48)))).mean) / 255 < STEADY:
+            return now
+        shot = now
+    return shot
+
+
+COVER_MATCH = 0.06    # cover_on_page below this: the page shows this playlist's cover
+CHANGED = 0.06        # header_change above this (against before the playlist was opened): another page now
+STEADY = 0.02         # header_change below this between two shots in a row: the page has finished loading
+
+
 def _start(uri: str, cover: bytes | None, timeout: float) -> bool:
+    before = None
+    hwnd = winutil._window_for_exe(SPOTIFY_EXE)
+    if hwnd:                       # the page shown now, to tell when Spotify has switched away from it
+        try:
+            winutil.focus_window(SPOTIFY_EXE)
+            before = _settled_image(hwnd)
+        except RuntimeError:
+            pass
     winutil.launch(uri)
-    deadline = time.monotonic() + (timeout if winutil._window_for_exe(SPOTIFY_EXE) else timeout + 12)
-    last = None
+    deadline = time.monotonic() + (timeout if hwnd else timeout + 12)
+    last, previous = None, None
     while time.monotonic() < deadline:
         time.sleep(0.35)
         hwnd = winutil._window_for_exe(SPOTIFY_EXE)
@@ -172,11 +215,17 @@ def _start(uri: str, cover: bytes | None, timeout: float) -> bool:
         if button is None:
             last = "no Play button on the page"
             continue
+        shot, previous = previous, img
         if cover is not None:
             match = cover_on_page(img, button, cover)
-            if match > 0.06:
-                last = f"page not showing this playlist yet (cover diff {match:.2f})"
-                continue
+            if match > COVER_MATCH:
+                # No cover on the page (a banner header?): accept a page that changed and finished loading.
+                changed = header_change(before, img, button) if before is not None else 1.0
+                steady = shot is not None and header_change(shot, img, button) < STEADY
+                if not (changed > CHANGED and steady):
+                    last = f"page not showing this playlist yet (cover diff {match:.2f}, header change {changed:.2f})"
+                    continue
+                log.info("no matching cover on %s's page (diff %.2f); its header changed and settled", uri, match)
         if button.playing:
             log.info("playlist %s is already playing", uri)
             return False
